@@ -3,10 +3,14 @@ subroutine cal_hessian_4p(parini)
     use mod_parini, only: typ_parini
     use mod_atoms, only: typ_atoms, typ_atoms_arr, typ_file_info, atom_copy_old
     use mod_atoms, only: atom_copy, atom_deallocate, set_atomic_mass
+    use mod_atoms, only: atom_deallocate_old
     use mod_atoms, only: update_ratp, update_rat, set_rat, set_rat_iat, get_rat
     use mod_processors, only: iproc
-    use mod_potential, only: potential
+    use mod_potential, only: potcode
     use mod_yaml_conf, only: write_yaml_conf, read_yaml_conf
+    use mod_potential, only: cal_potential_forces
+    use mod_potential, only: init_potential_forces
+    use mod_potential, only: fini_potential_forces
     use futile
     use dynamic_memory
     use yaml_output
@@ -30,7 +34,7 @@ subroutine cal_hessian_4p(parini)
     call atom_copy(atoms_arr%atoms(1),atoms,'atoms_arr%atoms(1)->atoms')
     call atom_deallocate(atoms_arr%atoms(1))
     deallocate(atoms_arr%atoms)
-    potential=trim(parini%potential_potential)
+    potcode=trim(parini%potential_potential)
     !logical, allocatable:: yes(:)
     allocate(hess(3*atoms%nat,3*atoms%nat),stat=istat)
     allocate(rat_center(3*atoms%nat),stat=istat)
@@ -112,7 +116,7 @@ subroutine cal_hessian_4p(parini)
         !-----------------------------------------
     enddo
     call set_rat(atoms,rat_center,setall=.true.)
-    call final_potential_forces(parini,atoms)
+    call fini_potential_forces(parini,atoms)
     !-------------------------------------------------------
     !deallocate(yes)
     !check symmetry
@@ -174,6 +178,8 @@ subroutine cal_hessian_4p(parini)
             enddo
         endif
     enddo
+    atoms_arr%nconf=2*10+1
+    allocate(atoms_arr%atoms(atoms_arr%nconf))
     do j=1,3*atoms%nat
         jat=(j-1)/3+1
         jxyz=mod(j-1,3)+1
@@ -203,8 +209,6 @@ subroutine cal_hessian_4p(parini)
         call yaml_map('vibrational frequencies',freq,fmt='(e23.15)')
         !call yaml_map('vibrational frequencies',sqrt(eval)*219474.63068d0,fmt='(e23.15)')
         !write(iunit,*) '---  TB eigenvalues in a.u. -------------'
-        atoms_arr%nconf=2*10+1
-        allocate(atoms_arr%atoms(atoms_arr%nconf))
         call yaml_sequence_open('vibrational eigenmodes')
         call update_ratp(atoms)
         do imode=1,3*atoms%nat
@@ -244,9 +248,12 @@ subroutine cal_hessian_4p(parini)
             enddo
         enddo
         call yaml_sequence_close()
-        deallocate(atoms_arr%atoms)
         call f_free(freq)
     endif
+    do iconf=1,atoms_arr%nconf
+        call atom_deallocate_old(atoms_arr%atoms(iconf))
+    enddo
+    deallocate(atoms_arr%atoms)
     call atom_deallocate(atoms)
 end subroutine cal_hessian_4p
 !*****************************************************************************************

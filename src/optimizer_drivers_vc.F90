@@ -2,9 +2,10 @@
 subroutine vc_minimize(parini,iproc,atoms,paropt)
     use mod_parini, only: typ_parini
     use mod_atoms, only: typ_atoms, typ_file_info
-    use mod_atoms, only: update_ratp, update_rat, set_rat, get_rat
+    use mod_atoms, only: update_ratp, update_rat, set_rat, get_rat, atom_calnorm
     use mod_acf, only: acf_write
     use mod_opt, only: typ_paropt
+    use mod_potential, only: cal_potential_forces
     implicit none
     type(typ_parini), intent(in):: parini
     integer, intent(in):: iproc !, n, nr

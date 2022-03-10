@@ -1,0 +1,14 @@
+main:
+    task         :   lammps
+    types        :   Ca F
+
+potential:
+    potential    :   ann
+    ewald:
+        ewald    : False
+        psolver  : kwald 
+        ecut     : 7.0
+
+ann:
+    approach     : cent1
+    syslinsolver : operator

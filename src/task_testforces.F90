@@ -18,13 +18,17 @@ end subroutine task_testforces
 !*****************************************************************************************
 subroutine testforces_fd(parini)
     use mod_parini, only: typ_parini
-    use mod_atoms, only: typ_atoms, typ_atoms_arr, atom_copy_old, atom_deallocate
+    use mod_atoms, only: typ_atoms, typ_atoms_arr, atom_copy_old
+    use mod_atoms, only: atom_deallocate, atom_deallocate_old
     use mod_atoms, only: get_rat_iat, set_rat_iat
-    use mod_potential, only: potential
+    use mod_potential, only: potcode
     use mod_processors, only: iproc
     use mod_const, only: bohr2ang
     use mod_acf, only: acf_read
     use mod_yaml_conf, only: read_yaml_conf
+    use mod_potential, only: init_potential_forces
+    use mod_potential, only: fini_potential_forces
+    use mod_potential, only: cal_potential_forces
     use yaml_output
     implicit none
     type(typ_parini), intent(in):: parini
@@ -40,7 +44,7 @@ subroutine testforces_fd(parini)
     call atom_copy_old(atoms_arr%atoms(1),atoms,'atoms_arr%atoms(iconf)->atoms_s')
     call atom_deallocate(atoms_arr%atoms(1))
     deallocate(atoms_arr%atoms)
-    potential=trim(parini%potential_potential)
+    potcode=trim(parini%potential_potential)
     call init_potential_forces(parini,atoms)
     call cal_potential_forces(parini,atoms)
     call calnorm(3*atoms%nat,atoms%fat,fnrm)
@@ -83,6 +87,7 @@ subroutine testforces_fd(parini)
         !write(*,'(a,2es24.15,es14.5)') 'EPOTs: ',epot_l,epot_r,epot_r-epot_l
         call yaml_map('iat',iat)
         call yaml_map('F_x',atoms_center%fat(1,iat))
+        call yaml_map('Fd_x',fd)
         call yaml_map('err_x',fd-atoms_center%fat(1,iat),fmt='(f20.12)')
         !write(*,'(a,i,a,es11.2,2x,es19.10)') 'F_x error of atom ',iat,' is', &
         !    fd-atoms_center%fat(1,iat),atoms_center%fat(1,iat)
@@ -104,6 +109,7 @@ subroutine testforces_fd(parini)
         call yaml_map('epot_diff_y',epot_r-epot_l)
         !write(*,'(a,2es24.15,es14.5)') 'EPOTs: ',epot_l,epot_r,epot_r-epot_l
         call yaml_map('F_y',atoms_center%fat(2,iat))
+        call yaml_map('Fd_y',fd)
         call yaml_map('err_y',fd-atoms_center%fat(2,iat),fmt='(f20.12)')
         !write(*,'(a,i,a,es11.2,2x,es19.10)') 'F_y error of atom ',iat,' is', &
         !    fd-atoms_center%fat(2,iat),atoms_center%fat(2,iat)
@@ -125,6 +131,7 @@ subroutine testforces_fd(parini)
         call yaml_map('epot_diff_z',epot_r-epot_l)
         !write(*,'(a,2es24.15,es14.5)') 'EPOTs: ',epot_l,epot_r,epot_r-epot_l
         call yaml_map('F_z',atoms_center%fat(3,iat))
+        call yaml_map('Fd_z',fd)
         call yaml_map('err_z',fd-atoms_center%fat(3,iat),fmt='(f20.12)')
         !write(*,'(a,i,a,es11.2,2x,es19.10)') 'F_z error of atom ',iat,' is', &
         !    fd-atoms_center%fat(3,iat),atoms_center%fat(3,iat)
@@ -132,13 +139,15 @@ subroutine testforces_fd(parini)
         call set_rat_iat(atoms,iat,xyz)
     enddo
     call yaml_sequence_close()
-    call final_potential_forces(parini,atoms)
+    call fini_potential_forces(parini,atoms)
+    call atom_deallocate_old(atoms)
+    call atom_deallocate_old(atoms_center)
 end subroutine testforces_fd
 !*****************************************************************************************
 subroutine teststress_fd(parini)
     use mod_parini, only: typ_parini
     use mod_atoms, only: typ_atoms, update_ratp
-    use mod_potential, only: potential
+    use mod_potential, only: potcode
     use mod_processors, only: iproc
     use mod_acf, only: acf_read
     implicit none
@@ -152,7 +161,7 @@ subroutine teststress_fd(parini)
     integer, parameter:: m=3
     real(8), parameter:: h=5.d-5
     real(8):: ener(-m:m), c(-m:m)=(/-1.d0,9.d0,-45.d0,0.d0,45.d0,-9.d0,1.d0/)
-    potential=trim(parini%potential_potential)
+    potcode=trim(parini%potential_potential)
    
     call acf_read(parini,'posinp.acf',1,atoms=atoms)
     allocate(rat_int(3,atoms%nat))
@@ -229,9 +238,11 @@ subroutine teststress_fd_cellvec(parini)
     use mod_atoms, only: typ_atoms, typ_atoms_arr
     use mod_atoms, only: update_ratp, update_rat, atom_copy_old, atom_deallocate
     use mod_yaml_conf, only: read_yaml_conf
-    use mod_potential, only: potential
+    use mod_potential, only: potcode
     use mod_processors, only: iproc
     use mod_acf, only: acf_read
+    use mod_potential, only: init_potential_forces
+    use mod_potential, only: cal_potential_forces
     implicit none
     type(typ_parini), intent(in):: parini
     !local variables
@@ -244,7 +255,7 @@ subroutine teststress_fd_cellvec(parini)
     integer, parameter:: m=3
     real(8), parameter:: h=5.d-5
     real(8):: ener(-m:m), c(-m:m)=(/-1.d0,9.d0,-45.d0,0.d0,45.d0,-9.d0,1.d0/)
-    potential=trim(parini%potential_potential)
+    potcode=trim(parini%potential_potential)
    
     !call acf_read(parini,'posinp.acf',1,atoms=atoms)
 

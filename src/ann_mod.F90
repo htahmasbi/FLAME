@@ -3,12 +3,16 @@ module mod_ann
     use dictionaries
     use mod_linked_lists, only: typ_linked_lists
     use mod_electrostatics, only: typ_poisson
+    use mod_radpots_cent2, only: typ_radpots_cent2
     implicit none
     private
-    public:: ann_arr_allocate, ann_arr_deallocate, set_number_of_ann
-    public:: init_ann_arr, fini_ann_arr
+    public:: ann_arr_deallocate
     public:: convert_x_ann, convert_ann_x, convert_x_ann_arr
     public:: convert_ann_epotd
+    public:: typ_ann_arr
+    type, public:: typ_chi_arr
+        real(8), allocatable:: chis(:)
+    end type typ_chi_arr
     type, public:: typ_ann
         type(dictionary), pointer :: dict=>null()
         integer:: nl !number of hidden layer plus one
@@ -23,16 +27,22 @@ module mod_ann
         integer:: ng4=-1
         integer:: ng5=-1
         integer:: ng6=-1
-        real(8):: a(350,350,10), b(350,10), x(350,10), y(350,0:10), yd(350,10), ad(350*350,10), bd(350,10)
-        real(8):: d(350)
-        real(8):: gbounds(2,350)
-        real(8):: two_over_gdiff(350)
-        !real(8):: rc1(350)
+        real(8), allocatable:: a(:,:,:)
+        real(8), allocatable:: b(:,:)
+        real(8), allocatable:: x(:,:)
+        real(8), allocatable:: y(:,:)
+        real(8), allocatable:: yd(:,:)
+        real(8), allocatable:: ad(:,:)
+        real(8), allocatable:: bd(:,:)
+        real(8), allocatable:: d(:)
+        real(8), allocatable:: gbounds(:,:)
+        real(8), allocatable:: two_over_gdiff(:)
         real(8):: gausswidth
         real(8):: gausswidth_ion
         real(8):: chi0
         real(8):: hardness
         real(8):: spring_const
+        real(8):: qtarget
         real(8):: zion
         real(8):: qinit
         real(8):: rionic
@@ -42,39 +52,38 @@ module mod_ann
         character(20):: method
 
         !The 1st type of symmetry functions introduced by Behler
-        real(8):: g1eta(350)
-        real(8):: g1rs(350)
+        real(8), allocatable:: g1eta(:)
+        real(8), allocatable:: g1rs(:)
 
         !The 2nd type of symmetry functions introduced by Behler
-        real(8):: g2eta(350)
-        real(8):: g2rs(350)
-        integer:: g2i(350)
+        real(8), allocatable:: g2eta(:)
+        real(8), allocatable:: g2rs(:)
+        integer, allocatable:: g2i(:)
 
         !The 3rd type of symmetry functions introduced by Behler
-        real(8):: g3kappa(350)
+        real(8), allocatable:: g3kappa(:)
 
         !The 4th type of symmetry functions introduced by Behler
-        real(8):: g4eta(350)
-        real(8):: g4zeta(350)
-        real(8):: g4lambda(350)
+        real(8), allocatable:: g4eta(:)
+        real(8), allocatable:: g4zeta(:)
+        real(8), allocatable:: g4lambda(:)
 
         !The 5th type of symmetry functions introduced by Behler
-        real(8):: g5eta(350)
-        real(8):: g5zeta(350)
-        real(8):: g5lambda(350)
-        integer:: g5i(2,350)
-
-        !The 6th type of symmetry functions introduced by Ghasemi
-        real(8):: g6eta(350)
-        real(8):: teneria(3,3,30)
+        real(8), allocatable:: g5eta(:)
+        real(8), allocatable:: g5zeta(:)
+        real(8), allocatable:: g5lambda(:)
+        integer, allocatable:: g5i(:,:)
 
         !some other variables
-        real(8):: his(1000,350)
+        real(8), allocatable:: his(:,:)
 
         character(256):: hlines(10)
+        contains
+        procedure, public, pass(self):: ann_allocate
         
     end type typ_ann
-    type, public:: typ_ann_arr
+    
+    type:: typ_ann_arr
         logical:: exists_yaml_file = .false.
         integer:: iunit
         integer:: nann=-1
@@ -82,6 +91,8 @@ module mod_ann
         integer:: nweight_max=-1
         logical:: compute_symfunc=.true.
         logical:: cal_force=.true.
+        logical:: linear_rho_pot_initiated=.false. 
+        logical:: trial_energy_required=.false.
         character(30):: event='unknown'
         character(50):: approach='unknown'
         character(50):: syslinsolver='unknown'
@@ -90,6 +101,8 @@ module mod_ann
         real(8):: epot_es
         real(8):: fchi_angle
         real(8):: fchi_norm
+        real(8):: dpm_err 
+        real(8):: dpm_rmse
         !real(8), allocatable:: yall(:,:)
         !real(8), allocatable:: y0d(:,:,:)
         integer:: natsum(10)
@@ -102,8 +115,8 @@ module mod_ann
         real(8):: chi_min(10)
         real(8):: chi_sum(10)
         real(8):: chi_delta(10)
-        real(8):: yall_bond(100,100,100)
-        real(8):: y0d_bond(100,3,100,100)
+        real(8), allocatable:: yall_bond(:,:,:)
+        real(8), allocatable:: y0d_bond(:,:,:,:)
         !real(8), allocatable:: y0dr(:,:,:)
         integer, allocatable:: loc(:)
         integer, allocatable, public:: num(:)
@@ -120,6 +133,14 @@ module mod_ann
         integer, allocatable:: ipiv(:)
         real(8), allocatable:: qq(:)
         type(typ_ann), allocatable:: ann(:)
+        type(typ_radpots_cent2):: radpots_cent2
+        type(typ_chi_arr), allocatable:: chi_tmp(:)
+        type(typ_chi_arr), allocatable:: chi_ref_train(:)
+        type(typ_chi_arr), allocatable:: chi_ref_valid(:)
+        contains
+        procedure, public, pass(self):: init_ann_arr
+        procedure, public, pass(self):: fini_ann_arr
+        procedure, public, pass(self):: set_number_of_ann
     end type typ_ann_arr
     type, public:: typ_cent
         real(8), allocatable:: gwi(:)
@@ -132,64 +153,93 @@ module mod_ann
     end type typ_cent
 contains
 !*****************************************************************************************
-subroutine set_number_of_ann(parini,ann_arr)
-    use mod_parini, only: typ_parini
+subroutine set_number_of_ann(self,nann)
     implicit none
-    type(typ_parini), intent(in):: parini
-    type(typ_ann_arr), intent(inout):: ann_arr
+    class(typ_ann_arr), intent(inout):: self
+    integer, intent(in):: nann
     !local variables
-    ann_arr%nann=parini%ntypat
-    if(parini%bondbased_ann) then
-        ann_arr%nann=4
-    endif
+    self%nann=nann
 end subroutine set_number_of_ann
 !*****************************************************************************************
-subroutine init_ann_arr(ann_arr)
+subroutine init_ann_arr(self)
     !use mod_opt_ann, only: typ_opt_ann
     use yaml_output
     use dynamic_memory
     implicit none
-    type(typ_ann_arr), intent(inout):: ann_arr
+    class(typ_ann_arr), intent(inout):: self
     !local variables
     integer:: nw, ialpha, iann, nwtot
-    do iann=1,ann_arr%nann
+    do iann=1,self%nann
         nw=0
-        do ialpha=1,ann_arr%ann(iann)%nl
-            nw=nw+(ann_arr%ann(iann)%nn(ialpha-1)+1)*ann_arr%ann(iann)%nn(ialpha)
+        do ialpha=1,self%ann(iann)%nl
+            nw=nw+(self%ann(iann)%nn(ialpha-1)+1)*self%ann(iann)%nn(ialpha)
         enddo
-        ann_arr%nweight_max=max(ann_arr%nweight_max,nw)
+        self%nweight_max=max(self%nweight_max,nw)
     enddo
-    call ann_arr_allocate(ann_arr)
-    ann_arr%num=f_malloc0([1.to.ann_arr%nann],id='ann_arr%num')
-    ann_arr%loc=f_malloc0([1.to.ann_arr%nann],id='ann_arr%loc')
+    call ann_arr_allocate(self)
+    self%num=f_malloc0([1.to.self%nann],id='self%num')
+    self%loc=f_malloc0([1.to.self%nann],id='self%loc')
     nwtot=0
     call yaml_sequence_open('EKF') !,flow=.true.)
-    do iann=1,ann_arr%nann
-        do ialpha=1,ann_arr%ann(iann)%nl
-            ann_arr%num(iann)=ann_arr%num(iann)+(ann_arr%ann(iann)%nn(ialpha-1)+1)*ann_arr%ann(iann)%nn(ialpha)
+    do iann=1,self%nann
+        do ialpha=1,self%ann(iann)%nl
+            self%num(iann)=self%num(iann)+(self%ann(iann)%nn(ialpha-1)+1)*self%ann(iann)%nn(ialpha)
         enddo
-        ann_arr%loc(iann)=nwtot+1
-        nwtot=nwtot+ann_arr%num(iann)
+        self%loc(iann)=nwtot+1
+        nwtot=nwtot+self%num(iann)
         call yaml_sequence(advance='no')
         call yaml_map('iann',iann)
-        call yaml_map('loc',ann_arr%loc(iann))
-        call yaml_map('num',ann_arr%num(iann))
+        call yaml_map('loc',self%loc(iann))
+        call yaml_map('num',self%num(iann))
         call yaml_map('n',nwtot)
-        !write(*,'(a,3i5)') 'EKF: ',ann_arr%loc(iann),ann_arr%num(iann),nwtot
+        !write(*,'(a,3i5)') 'EKF: ',self%loc(iann),self%num(iann),nwtot
     enddo
     call yaml_sequence_close()
 end subroutine init_ann_arr
 !*****************************************************************************************
-subroutine fini_ann_arr(ann_arr)
+subroutine fini_ann_arr(self)
     !use mod_opt_ann, only: typ_opt_ann
     use dynamic_memory
     implicit none
-    type(typ_ann_arr), intent(inout):: ann_arr
+    class(typ_ann_arr), intent(inout):: self
     !local variables
-    call ann_arr_deallocate(ann_arr)
-    call f_free(ann_arr%num)
-    call f_free(ann_arr%loc)
+    call ann_arr_deallocate(self)
+    call f_free(self%num)
+    call f_free(self%loc)
+    call self%radpots_cent2%fini_radpots_cent2()
 end subroutine fini_ann_arr
+!*****************************************************************************************
+subroutine ann_allocate(self,nnmax,nl)
+    implicit none
+    class(typ_ann), intent(inout):: self
+    integer, intent(in):: nnmax, nl
+    !local variables
+    !integer::
+    allocate(self%a(nnmax,nnmax,nl))
+    allocate(self%b(nnmax,nl))
+    allocate(self%x(nnmax,nl))
+    allocate(self%y(nnmax,0:nl))
+    allocate(self%yd(nnmax,nl))
+    allocate(self%ad(nnmax*nnmax,nl))
+    allocate(self%bd(nnmax,nl))
+    allocate(self%d(nnmax))
+    allocate(self%gbounds(2,nnmax))
+    allocate(self%two_over_gdiff(nnmax))
+    allocate(self%g1eta(nnmax))
+    allocate(self%g1rs(nnmax))
+    allocate(self%g2eta(nnmax))
+    allocate(self%g2rs(nnmax))
+    allocate(self%g2i(nnmax))
+    allocate(self%g3kappa(nnmax))
+    allocate(self%g4eta(nnmax))
+    allocate(self%g4zeta(nnmax))
+    allocate(self%g4lambda(nnmax))
+    allocate(self%g5eta(nnmax))
+    allocate(self%g5zeta(nnmax))
+    allocate(self%g5lambda(nnmax))
+    allocate(self%g5i(2,nnmax))
+    allocate(self%his(1000,nnmax))
+end subroutine ann_allocate
 !*****************************************************************************************
 subroutine ann_arr_allocate(ann_arr)
     !use mod_opt_ann, only: typ_opt_ann
@@ -209,19 +259,25 @@ subroutine ann_arr_allocate(ann_arr)
     allocate(ann_arr%chi_i(1:ann_arr%natmax))
     allocate(ann_arr%chi_o(1:ann_arr%natmax))
     allocate(ann_arr%chi_d(1:ann_arr%natmax))
-    allocate(ann_arr%a(1:(ann_arr%natmax+1)*(ann_arr%natmax+1)))
+    if(.not. allocated(ann_arr%a)) then
+        allocate(ann_arr%a(1:(ann_arr%natmax+1)*(ann_arr%natmax+1)))
+    end if
     ann_arr%fat_chi=0.d0
     ann_arr%chi_i=0.d0
     ann_arr%chi_o=0.d0
     ann_arr%chi_d=0.d0
-    ann_arr%a=0.d0
+    if(allocated(ann_arr%a)) then
+        ann_arr%a=0.d0
+    end if
     allocate(ann_arr%dqat_weights(ann_arr%nweight_max,ann_arr%natmax))
     allocate(ann_arr%g_per_atom(ann_arr%nweight_max,ann_arr%natmax))
     !symfunc%linked_lists%maxbound_rad is assumed 10000
-    allocate(ann_arr%fatpq(1:3,1:10000))
-    allocate(ann_arr%stresspq(1:3,1:3,1:10000))
+    allocate(ann_arr%fatpq(1:3,1:20000))
+    allocate(ann_arr%stresspq(1:3,1:3,1:20000))
     allocate(ann_arr%ipiv(1:ann_arr%natmax+1))
     allocate(ann_arr%qq(1:ann_arr%natmax+1))
+    allocate(ann_arr%yall_bond(10,10,10))
+    allocate(ann_arr%y0d_bond(10,3,10,10))
 end subroutine ann_arr_allocate
 !*****************************************************************************************
 subroutine ann_arr_deallocate(ann_arr)
@@ -239,14 +295,18 @@ subroutine ann_arr_deallocate(ann_arr)
     deallocate(ann_arr%chi_i)
     deallocate(ann_arr%chi_o)
     deallocate(ann_arr%chi_d)
-    deallocate(ann_arr%a)
+    if(allocated(ann_arr%a)) then
+        deallocate(ann_arr%a)
+    endif
     deallocate(ann_arr%fat_chi)
     deallocate(ann_arr%dqat_weights)
     deallocate(ann_arr%g_per_atom)
     deallocate(ann_arr%fatpq)
     deallocate(ann_arr%stresspq)
-    deallocate(ann_arr%ipiv)
+    if (allocated(ann_arr%ipiv)) deallocate(ann_arr%ipiv)
     deallocate(ann_arr%qq)
+    deallocate(ann_arr%yall_bond)
+    deallocate(ann_arr%y0d_bond)
 end subroutine ann_arr_deallocate
 !*****************************************************************************************
 subroutine convert_x_ann(n,x,ann)

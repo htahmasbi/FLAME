@@ -37,9 +37,11 @@ subroutine bader_neargrid(parini)
     logical:: gp_max
     logical :: max_point
     real(8):: ttmax, ttmin, tt1, tt
-    real(8):: oat(3), mat(3,matl)=0.d0
+    real(8):: oat(3)
+    real(8),allocatable:: mat(:,:)
     real(8),allocatable::rat(:,:), qat(:), orat(:,:)
     character(len =30)::filename
+    allocate(mat(3,matl),source=0.d0)
     filename=trim(parini%filename_bader)
     open(unit=1, file=filename)
       read(1,*)
@@ -193,6 +195,7 @@ subroutine bader_neargrid(parini)
     write(*,*)"number of all atom detected:",sum(chgat)*poisson%h(1)*poisson%h(2)*poisson%h(3)/vol
     write(*,*)"----------------------------------------------------------------"
     !..............................................
+    deallocate(mat)
 end subroutine bader_neargrid
 !*****************************************************************************************
   subroutine ongrid_neargrid(poisson,d,i_dist)
@@ -478,7 +481,7 @@ subroutine edag_refinement (last_iter,iter,poisson,i_dist,car_lat)
     type(typ_poisson):: poisson
     logical :: m_point
     integer,intent(in) :: d(3)
-    integer :: p1, p2 ,p3 ,d1 ,d2, d3,p_max1,p_max2,p_max3	
+    integer :: p1, p2 ,p3 ,d1 ,d2, d3,p_max1,p_max2,p_max3
     m_point=.true. 
     do d1=-1,1
       do d2=-1,1
@@ -500,11 +503,12 @@ subroutine cube_read_neargrid(filename,nat,rat,qat,poisson,vol)
     implicit none
     character(256):: str
     character(*), intent(in):: filename
+    integer:: nat
     real(8), intent(out):: rat(3,nat), qat(nat)
     real(8), intent(in):: vol
     type(typ_poisson), intent(out):: poisson
     real(8):: tt
-    integer:: nat, iat, igpx, igpy, igpz, ind, ios, iline, iatom
+    integer:: iat, igpx, igpy, igpz, ind, ios, iline, iatom
     character(2):: separator
     integer:: istat,n1,n2,n3
     separator=achar(32)//achar(9)

@@ -4,12 +4,13 @@ subroutine dimer_method(parini)
     use mod_atoms, only: typ_atoms, typ_atoms_arr, typ_file_info, atom_deallocate_old
     use mod_atoms, only: atom_copy_old, atom_deallocate, set_ndof, atom_calmaxforcecomponent
     use mod_atoms, only: update_ratp, update_rat
-    use mod_potential, only: potential, fcalls
+    use mod_potential, only: potcode, fcalls
     use mod_saddle, only: dmconverged, str_moving_atoms_rand, dimsep, ampl
     use mod_opt, only: typ_paropt
     use mod_yaml_conf, only: write_yaml_conf, read_yaml_conf
     use mod_processors, only: iproc
     use mod_const, only: ang2bohr
+    use mod_potential, only: cal_potential_forces
     use dynamic_memory
     use yaml_output
     implicit none
@@ -30,7 +31,7 @@ subroutine dimer_method(parini)
     !character(256):: comment1, comment2
     call f_routine(id='dimer_method')
     !----------------------------------------------------------------
-    potential=trim(parini%potential_potential)
+    potcode=trim(parini%potential_potential)
     paropt_m=parini%paropt_geopt
     if(parini%two_level_geopt) then
         paropt_m_prec=parini%paropt_geopt_prec
@@ -123,7 +124,7 @@ subroutine dimer_method(parini)
     call yaml_map('force_call',int(fcalls))
     !write(*,'(a,i7)') 'force_call',int(fcalls)
     call f_free(uvn) !,atoms_move_random)
-    call atom_deallocate_old(atoms_s,sat=.true.,rat=.true.,fat=.true.,bemoved=.true.)
+    call atom_deallocate_old(atoms_s)
     !call deallocateatomsarrays
     call f_release_routine()
 end subroutine dimer_method
@@ -258,8 +259,8 @@ subroutine find_minima(parini,iproc,atoms_s,paropt_m,paropt_m_prec,uvn,curv,epot
     character(100):: comment
     !allocate(rat1(3,atoms_s%nat),rat2(3,atoms_s%nat))
     !allocate(fat1(3,atoms_s%nat),fat2(3,atoms_s%nat))
-    call atom_allocate_old(atoms_m1,atoms_s%nat,0,0,sat=.true.,fat=.true.,bemoved=.true.)
-    call atom_allocate_old(atoms_m2,atoms_s%nat,0,0,sat=.true.,fat=.true.,bemoved=.true.)
+    call atom_allocate_old(atoms_m1,atoms_s%nat,0,0)
+    call atom_allocate_old(atoms_m2,atoms_s%nat,0,0)
     call atom_copy_old(atoms_s,atoms_m1,'atoms_s->atoms_m1')
     call atom_copy_old(atoms_s,atoms_m2,'atoms_s->atoms_m2')
     !atoms_m1%rat(1:3,1:atoms_s%nat)=atoms_s%rat(1:3,1:atoms_s%nat)
@@ -320,8 +321,8 @@ subroutine find_minima(parini,iproc,atoms_s,paropt_m,paropt_m_prec,uvn,curv,epot
     call yaml_map('bh2',atoms_s%epot-atoms_m2%epot,fmt='(f13.3)')
     call yaml_mapping_close()
 
-    call atom_deallocate_old(atoms_m1,sat=.true.,rat=.true.,fat=.true.,bemoved=.true.)
-    call atom_deallocate_old(atoms_m2,sat=.true.,rat=.true.,fat=.true.,bemoved=.true.)
+    call atom_deallocate_old(atoms_m1)
+    call atom_deallocate_old(atoms_m2)
     !deallocate(rat1,rat2)
     !deallocate(fat1,fat2)
 end subroutine find_minima

@@ -29,6 +29,7 @@ subroutine ann_train(parini)
     use mod_opt_ann, only: typ_opt_ann, ekf_rivals, ekf_behler, ann_lm
     use mod_opt_ann, only: set_annweights
     use mod_atoms, only: typ_atoms_arr, typ_atoms
+    use mod_ann_io_yaml, only: read_data_yaml, write_ann_all_yaml
     use mod_processors, only: iproc
     use mod_callback_ann
     use dynamic_memory
@@ -48,15 +49,18 @@ subroutine ann_train(parini)
     call f_routine(id='ann_train')
     !-------------------------------------------------------
     !Reading configurations and their energies and forces
+    if(trim(parini%approach_ann)=='cent2' .and. trim(parini%optimizer_ann)/='rivals_fitchi') then
+        ann_arr%trial_energy_required=.false.
+    endif
     inquire(file="list_posinp_train.yaml",exist=file_exists)
     if(file_exists) then
-        call read_data_yaml(parini,'list_posinp_train.yaml',atoms_train)
+        call read_data_yaml(parini,'list_posinp_train.yaml',atoms_train,ann_arr=ann_arr)
     else
         call read_data_old(parini,'list_posinp_train',atoms_train)
     endif
     inquire(file="list_posinp_valid.yaml",exist=file_exists)
     if(file_exists) then
-        call read_data_yaml(parini,'list_posinp_valid.yaml',atoms_valid)
+        call read_data_yaml(parini,'list_posinp_valid.yaml',atoms_valid,ann_arr=ann_arr)
     else
         call read_data_old(parini,'list_posinp_valid',atoms_valid)
     endif
@@ -107,7 +111,7 @@ subroutine ann_train(parini)
 
     ann_arr%compute_symfunc=.false.
     !if(parini%prefit_ann .and. trim(parini%approach_ann)=='centt') then
-    if(parini%prefit_ann ) then
+    if(parini%prefit_ann .and. trim(parini%approach_ann)=='cent1') then
         !call prefit_cent_ener_ref(parini,ann_arr,symfunc_train,symfunc_valid,atoms_train,atoms_valid,opt_ann)
         call prefit_cent(parini,ann_arr,symfunc_train,symfunc_valid,atoms_train,atoms_valid,opt_ann)
     endif
@@ -123,6 +127,9 @@ subroutine ann_train(parini)
         call ekf_behler(parini,ann_arr,opt_ann)
     else if(trim(parini%optimizer_ann)=='rivals') then
         call ekf_rivals(parini,ann_arr,opt_ann)
+    else if(trim(parini%optimizer_ann)=='rivals_fitchi') then
+        write(*,*) opt_ann%n
+        call ekf_rivals_fitchi(parini,ann_arr,opt_ann,atoms_train,atoms_valid,symfunc_train,symfunc_valid)
     !else if(trim(parini%optimizer_ann)=='rivals_tmp') then
     !    call ekf_rivals_tmp(parini,ann_arr,symfunc_train,symfunc_valid,atoms_train,atoms_valid,opt_ann)
     else if(trim(parini%optimizer_ann)=='lm') then
@@ -138,7 +145,7 @@ subroutine ann_train(parini)
             call write_ann_all(parini,ann_arr,-1)
         endif
     endif
-    call fini_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid,symfunc_train,symfunc_valid)
+    call fini_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid,atoms_smplx,symfunc_train,symfunc_valid)
 
     call f_release_routine()
 end subroutine ann_train
@@ -252,7 +259,7 @@ end subroutine centt_simplex
 subroutine cal_rmse_force_centt(ndim,vertex,rmse_force_centt)
     use mod_callback_ann, only: atoms_smplx=>atoms_smplx_t, parini=>parini_t
     use mod_callback_ann, only: ann_arr=>ann_arr_t, opt_ann=>opt_ann_t
-    use mod_atoms, only: typ_atoms, atom_copy_old 
+    use mod_atoms, only: typ_atoms, atom_copy_old, atom_deallocate_old
     use mod_symfunc, only: typ_symfunc
     implicit none
     integer, intent(in) :: ndim
@@ -299,6 +306,7 @@ subroutine cal_rmse_force_centt(ndim,vertex,rmse_force_centt)
         enddo
         nat_tot=nat_tot+atoms%nat
     enddo
+    call atom_deallocate_old(atoms)
     rmse_force_centt=sqrt(rmse/real(3*nat_tot,8))
     write(*,*) 'rmse_force_centt ',rmse_force_centt
 end subroutine cal_rmse_force_centt
@@ -306,7 +314,7 @@ end subroutine cal_rmse_force_centt
 subroutine cal_rmse_energy_centt(ndim,vertex,rmse_energy_centt)
     use mod_callback_ann, only: atoms_smplx=>atoms_smplx_t, parini=>parini_t
     use mod_callback_ann, only: ann_arr=>ann_arr_t, opt_ann=>opt_ann_t
-    use mod_atoms, only: typ_atoms, atom_copy_old
+    use mod_atoms, only: typ_atoms, atom_copy_old, atom_deallocate_old
     use mod_symfunc, only: typ_symfunc
     implicit none
     integer, intent(in) :: ndim
@@ -356,15 +364,17 @@ subroutine cal_rmse_energy_centt(ndim,vertex,rmse_energy_centt)
             rmse=rmse+(atoms%epot-atoms_smplx%atoms(iconf)%epot)**2
         enddo
     enddo
+    call atom_deallocate_old(atoms)
     rmse_energy_centt=sqrt(rmse/real(atoms_smplx%nconf,8))
     write(*,*) 'rmse_energy_centt ',rmse_energy_centt
 end subroutine cal_rmse_energy_centt
 !*****************************************************************************************
 subroutine init_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid)
     use mod_parini, only: typ_parini
-    use mod_ann, only: typ_ann_arr, set_number_of_ann, init_ann_arr
+    use mod_ann, only: typ_ann_arr
     use mod_atoms, only: typ_atoms_arr
     use mod_opt_ann, only: typ_opt_ann, init_opt_ann
+    use mod_ann_io_yaml, only: read_input_ann_yaml, read_ann_yaml
     use mod_processors, only: iproc
     use yaml_output
     use futile
@@ -377,7 +387,11 @@ subroutine init_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid)
     character(30):: fnout
     character (50)::fname
     integer:: ierr
-    call set_number_of_ann(parini,ann_arr)
+    if(parini%bondbased_ann) then
+        call ann_arr%set_number_of_ann(4)
+    else
+        call ann_arr%set_number_of_ann(parini%ntypat)
+    endif
     if(ann_arr%nann==0) stop 'ERROR: number of type of atoms zero in ann_train'
     call yaml_map('number of ann',ann_arr%nann)
     !write(*,*) 'Here', ann_arr%nann
@@ -395,7 +409,7 @@ subroutine init_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid)
         call read_input_ann(parini,iproc,ann_arr)
     endif
     !---------------------------------------------
-    call init_ann_arr(ann_arr)
+    call ann_arr%init_ann_arr()
     if(trim(ann_arr%approach)=='cent3') then
         call init_opt_ann(3*atoms_train%nconf,opt_ann,ann_arr)
     else
@@ -415,12 +429,12 @@ subroutine init_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid)
     endif
 end subroutine init_ann_train
 !*****************************************************************************************
-subroutine fini_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid,symfunc_train,symfunc_valid)
+subroutine fini_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid,atoms_smplx,symfunc_train,symfunc_valid)
     use mod_parini, only: typ_parini
-    use mod_ann, only: typ_ann_arr, fini_ann_arr
+    use mod_ann, only: typ_ann_arr
     use mod_symfunc, only: typ_symfunc_arr
     use mod_opt_ann, only: typ_opt_ann, fini_opt_ann
-    use mod_atoms, only: typ_atoms_arr
+    use mod_atoms, only: typ_atoms_arr, atom_deallocate_old
     use mod_processors, only: iproc
     use dynamic_memory
     use yaml_output
@@ -428,7 +442,7 @@ subroutine fini_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid,symfunc
     type(typ_parini), intent(in):: parini
     type(typ_ann_arr), intent(inout):: ann_arr
     type(typ_opt_ann), intent(inout):: opt_ann
-    type(typ_atoms_arr), intent(inout):: atoms_train, atoms_valid
+    type(typ_atoms_arr), intent(inout):: atoms_train, atoms_valid, atoms_smplx
     type(typ_symfunc_arr), intent(inout):: symfunc_train, symfunc_valid
     !local variables
     integer:: iconf
@@ -440,16 +454,42 @@ subroutine fini_ann_train(parini,ann_arr,opt_ann,atoms_train,atoms_valid,symfunc
         call yaml_close_stream(unit=ann_arr%iunit)
     endif
 
-    call fini_ann_arr(ann_arr)
+    call ann_arr%fini_ann_arr()
+    if(trim(parini%optimizer_ann)=='rivals_fitchi') then
+        do iconf=1,atoms_train%nconf
+            deallocate(ann_arr%chi_ref_train(iconf)%chis)
+        enddo
+        deallocate(ann_arr%chi_ref_train)
+        do iconf=1,atoms_valid%nconf
+            deallocate(ann_arr%chi_ref_valid(iconf)%chis)
+        enddo
+        deallocate(ann_arr%chi_ref_valid)
+    endif
     call fini_opt_ann(opt_ann)
 
     do iconf=1,atoms_train%nconf
         call f_free(symfunc_train%symfunc(iconf)%y)
+        call atom_deallocate_old(atoms_train%atoms(iconf))
     enddo
 
     do iconf=1,atoms_valid%nconf
         call f_free(symfunc_valid%symfunc(iconf)%y)
+        call atom_deallocate_old(atoms_valid%atoms(iconf))
     enddo
+
+    do iconf=1,atoms_smplx%nconf
+        call atom_deallocate_old(atoms_smplx%atoms(iconf))
+    enddo
+
+    do iconf=1,atoms_train%nconf
+        call symfunc_train%symfunc(iconf)%fini_symfunc()
+    enddo
+    deallocate(symfunc_train%symfunc)
+
+    do iconf=1,atoms_valid%nconf
+        call symfunc_valid%symfunc(iconf)%fini_symfunc()
+    enddo
+    deallocate(symfunc_valid%symfunc)
 
     deallocate(atoms_train%conf_inc)
     deallocate(atoms_valid%conf_inc)
@@ -620,6 +660,7 @@ subroutine set_gbounds(parini,ann_arr,atoms_arr,strmess,symfunc_arr)
     use mod_atoms, only: typ_atoms_arr
     use mod_linked_lists, only: typ_pia_arr
     use mod_processors, only: iproc, nproc
+    use wrapper_MPI, only: fmpi_allreduce, FMPI_SUM
     use dynamic_memory
     implicit none
     type(typ_parini), intent(in):: parini
@@ -627,7 +668,7 @@ subroutine set_gbounds(parini,ann_arr,atoms_arr,strmess,symfunc_arr)
     type(typ_atoms_arr), intent(inout):: atoms_arr
     character(*), intent(in):: strmess
     type(typ_symfunc_arr), intent(inout):: symfunc_arr
-    !local variables 
+    !local variables
     integer:: iconf
     if(.not. allocated(symfunc_arr%symfunc)) then
         symfunc_arr%nconf=atoms_arr%nconf
@@ -635,12 +676,18 @@ subroutine set_gbounds(parini,ann_arr,atoms_arr,strmess,symfunc_arr)
     endif
     !write(*,'(a,i3,i6)') 'iproc,nconf ',iproc,atoms_arr%nconf
     do iconf=1,atoms_arr%nconf
+        call symfunc_arr%symfunc(iconf)%init_symfunc(parini%mpi_env)
         symfunc_arr%symfunc(iconf)%ng=ann_arr%ann(1)%nn(0) !HERE
         symfunc_arr%symfunc(iconf)%nat=atoms_arr%atoms(iconf)%nat
     enddo
-    configuration: do iconf=1+iproc,atoms_arr%nconf,nproc
+    !configuration: do iconf=1+iproc,atoms_arr%nconf,nproc
+    configuration: do iconf=1,atoms_arr%nconf
         if(trim(parini%symfunc)/='read') then
-            call symmetry_functions(parini,ann_arr,atoms_arr%atoms(iconf),symfunc_arr%symfunc(iconf),.false.)
+            call symfunc_arr%symfunc(iconf)%get_symfunc(parini,ann_arr,atoms_arr%atoms(iconf),.false.)
+            if(parini%mpi_env%nproc>1) then
+                call fmpi_allreduce(symfunc_arr%symfunc(iconf)%y(1,1), &
+                    ann_arr%ann(1)%nn(0)*atoms_arr%atoms(iconf)%nat,op=FMPI_SUM,comm=parini%mpi_env%mpi_comm)
+            endif
             if(.not. parini%save_symfunc_force_ann) then
                 call f_free(symfunc_arr%symfunc(iconf)%y0d)
             endif
@@ -750,7 +797,7 @@ subroutine write_symfunc(parini,iconf,atoms_arr,strmess,symfunc_arr)
     end associate
     end associate
     end associate
-    
+
     write(311,iostat=ios) wa
     if(ios/=0) then
         write(*,'(2a)') 'ERROR: failure writing to file ',trim(filename)
@@ -888,7 +935,7 @@ subroutine read_symfunc(parini,iconf,ann_arr,atoms_arr,strmess,symfunc_arr)
                 enddo
             enddo
         endif
-    endif bondbased            
+    endif bondbased
     end associate
     end associate
     end associate
@@ -921,9 +968,13 @@ subroutine save_gbounds(parini,ann_arr,atoms_arr,strmess,symfunc_arr)
     integer:: iconf, ib, ig, i, iat, jat, i0
     real(8), allocatable:: gminarr(:,:), gmaxarr(:,:) !, poll_period
     integer, allocatable:: iatmin(:,:), iatmax(:,:), iconfmin(:,:), iconfmax(:,:)
-    integer:: ibmin(350), ibmax(350)
+    integer, allocatable:: ibmin(:), ibmax(:)
     integer:: ngmax
-    ngmax=350
+    ngmax=0
+    do i=1,ann_arr%nann
+        ngmax=max(ngmax,ann_arr%ann(i)%nn(0))
+    enddo
+    allocate(ibmin(ngmax),ibmax(ngmax))
     allocate(gminarr(1:ngmax,1:parini%ntypat))
     gminarr=huge(1.d20)
     allocate(gmaxarr(1:ngmax,1:parini%ntypat))
@@ -936,7 +987,7 @@ subroutine save_gbounds(parini,ann_arr,atoms_arr,strmess,symfunc_arr)
     iconfmin=0.d0
     allocate(iconfmax(1:ngmax,1:parini%ntypat))
     iconfmax=0.d0
-    ibmin(1:350)=0 ; ibmax(1:350)=0
+    ibmin(1:ngmax)=0 ; ibmax(1:ngmax)=0
     do iconf=1,atoms_arr%nconf
         !if(mod(iconf-1,nproc)==iproc) cycle
         !write(41,'(i6,i3)',advance='no') mod(iconf-1,nproc),iproc
@@ -1091,13 +1142,14 @@ subroutine save_gbounds(parini,ann_arr,atoms_arr,strmess,symfunc_arr)
     deallocate(iatmax)
     deallocate(iconfmin)
     deallocate(iconfmax)
+    deallocate(ibmin,ibmax)
 end subroutine save_gbounds
 !*****************************************************************************************
 subroutine randomize_data_order(atoms_arr)
     use mod_atoms, only: typ_atoms_arr, typ_atoms, atom_copy_old, atom_deallocate_old
     implicit none
     type(typ_atoms_arr), intent(inout):: atoms_arr
-    !local variables 
+    !local variables
     integer:: i1, i2, iconf !, nat_t
     real(8):: t1, t2 !, rat_t(3,1000), epot_t
     type(typ_atoms):: atoms_t
@@ -1143,7 +1195,7 @@ subroutine set_ref_energy(parini,atoms_train,atoms_ref,ind)
     type(typ_atoms_arr), intent(inout):: atoms_ref
     integer, intent(out):: ind(200)
     !local variables
-    !real(8), allocatable:: 
+    !real(8), allocatable::
     integer:: iconf, mat
     atoms_ref%nconf=200
     allocate(atoms_ref%atoms(atoms_ref%nconf))
@@ -1193,7 +1245,7 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
     use mod_ann, only: typ_ann_arr
     use mod_symfunc, only: typ_symfunc
     use mod_symfunc, only: typ_symfunc_arr
-    use mod_atoms, only: typ_atoms, typ_atoms_arr, atom_copy_old
+    use mod_atoms, only: typ_atoms, typ_atoms_arr, atom_copy_old, atom_deallocate_old
     use mod_opt_ann, only: typ_opt_ann
     use mod_processors, only: iproc
     use futile
@@ -1209,8 +1261,10 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
     type(typ_atoms):: atoms
     type(typ_symfunc):: symfunc
     type(typ_opt_ann):: opt_ann
-    real(8):: rmse, errmax, tt, pi
+    real(8):: dpmrmse, rmse, errmax, tt, pi
     real(8):: frmse, ttx, tty, ttz, ppx, ppy, ppz, tt1, tt2, tt3, ttn, tta
+    real(8):: dpx,dpy,dpz
+    real(8):: dpx_ref,dpy_ref,dpz_ref
     integer:: iconf, ierrmax, iat, nat_tot, nconf_force
     real(8):: time1=0.d0
     real(8):: time2=0.d0
@@ -1228,6 +1282,7 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
     call cpu_time(time1)
     pi=4.d0*atan(1.d0)
     rmse=0.d0
+    dpmrmse=0.d0
     frmse=0.d0
     ttn=0.d0
     tta=0.d0
@@ -1256,7 +1311,7 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
             write(*,'(a,a)') 'ERROR: failure openning file: ',trim(filename)
             stop
         endif
-        !write(iunit,'(a2,a44,4a23)') "#", " ","E_dft","E_ann","E_dft-E_ann/atom (Ha)","E_dft-E_ann (eV)" 
+        !write(iunit,'(a2,a44,4a23)') "#", " ","E_dft","E_ann","E_dft-E_ann/atom (Ha)","E_dft-E_ann (eV)"
     endif
     configuration: do iconf=1,atoms_arr%nconf
         if(.not. atoms_arr%conf_inc(iconf)) cycle
@@ -1272,9 +1327,12 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
         !        (atoms%epot-atoms_arr%atoms(iconf)%epot)/atoms_arr%atoms(iconf)%nat
         !endif
         tt=abs(atoms%epot-atoms_arr%atoms(iconf)%epot)/atoms_arr%atoms(iconf)%nat
+        tt1=atoms%epot/atoms_arr%atoms(iconf)%nat
+        tt2=atoms_arr%atoms(iconf)%epot/atoms_arr%atoms(iconf)%nat
         !HERE
         if(parini%print_energy) then
-            write(iunit,'(i7,es14.5,a40,i6,a)') iconf,tt,trim(atoms_arr%fn(iconf)),atoms_arr%lconf(iconf),trim(data_set)
+          !write(iunit,'(i7,3es14.5,a35,i6,a)') iconf,tt,tt1,tt2,atoms_arr%lconf(iconf),trim(data_set)
+          write(iunit,'(i7,es16.8,es16.8,a40,i6,a)') iconf,tt1,tt2,trim(atoms_arr%fn(iconf)),atoms_arr%lconf(iconf),trim(data_set)
         endif
         if(tt>1.d-2) ilarge1=ilarge1+1
         if(tt>1.d-3) ilarge2=ilarge2+1
@@ -1284,6 +1342,14 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
             ierrmax=iconf
         endif
         rmse=rmse+tt**2
+        dpx_ref=atoms_arr%atoms(iconf)%dpm(1)
+        dpy_ref=atoms_arr%atoms(iconf)%dpm(2)
+        dpz_ref=atoms_arr%atoms(iconf)%dpm(3)
+        dpx=atoms%dpm(1)
+        dpy=atoms%dpm(2)
+        dpz=atoms%dpm(3)
+        dpmrmse=dpmrmse+(dpx_ref-dpx)**2+(dpy_ref-dpy)**2+(dpz_ref-dpz)**2
+        write(1391,'(3es18.8,a3,3es18.8,a3,es18.8)')dpx,dpy,dpz,' | ',dpx_ref,dpy_ref,dpz_ref,' | ',dpmrmse
         !if(tt>1.d-2) then
         !    atoms_arr%inclusion(iconf)=0
         !else
@@ -1309,10 +1375,12 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
         enddo
         ttn=ttn+ann_arr%fchi_norm
         tta=tta+ann_arr%fchi_angle
+        call atom_deallocate_old(atoms)
         !write(44,'(2i7,4es14.5)') iter,iconf,ann_arr%fchi_norm,ann_arr%fchi_angle,ttn/nconf_force,tta/nconf_force
         !endif
     enddo configuration
     rmse=sqrt(rmse/real(atoms_arr%nconf_inc,8))
+    dpmrmse=sqrt(dpmrmse/real(3*atoms_arr%nconf_inc,8))
     if(nconf_force==0) nconf_force=1
     ttn=ttn/real(nconf_force,8)
     tta=tta/real(nconf_force,8)
@@ -1338,6 +1406,7 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
         call yaml_map('ttn',ttn,fmt=trim(fmt_main),unit=ann_arr%iunit)
         call yaml_map('tta',tta,fmt=trim(fmt_main),unit=ann_arr%iunit)
         call yaml_map('frmse',frmse,fmt=trim(fmt_main),unit=ann_arr%iunit)
+        call yaml_map('dpmrmse',dpmrmse,fmt=trim(fmt_main),unit=ann_arr%iunit)
         call yaml_map('errmax',errmax,fmt=trim(fmt_main),unit=ann_arr%iunit)
         call yaml_map('ierrmax',ierrmax,unit=ann_arr%iunit)
         call yaml_map('nat',atoms_arr%atoms(ierrmax)%nat,unit=ann_arr%iunit)
@@ -1358,4 +1427,349 @@ subroutine ann_evaluate(parini,iter,ann_arr,symfunc_arr,atoms_arr,data_set)
     endif
     ann_arr%compute_symfunc=.false.
 end subroutine ann_evaluate
+!*****************************************************************************************
+subroutine ekf_rivals_fitchi(parini,ann_arr_main,opt_ann_main,atoms_train,atoms_valid,symfunc_train,symfunc_valid) !,opt_ann)
+    use mod_parini, only: typ_parini
+    use mod_ann, only: typ_ann_arr, convert_x_ann_arr
+    use mod_atoms, only: typ_atoms_arr
+    use mod_symfunc, only: typ_symfunc_arr
+    use mod_ann_io_yaml, only: write_ann_yaml
+    use mod_opt_ann, only: typ_opt_ann, init_opt_ann, get_opt_ann_x
+    use mod_ann_io_yaml, only: get_symfunc_parameters_yaml
+    use mod_processors, only: iproc
+    use yaml_output
+    use futile
+    implicit none
+    type(typ_parini), intent(in):: parini
+    type(typ_ann_arr), intent(inout):: ann_arr_main
+    type(typ_opt_ann), intent(inout):: opt_ann_main
+    type(typ_atoms_arr), intent(in):: atoms_train, atoms_valid
+    type(typ_symfunc_arr), intent(in):: symfunc_train, symfunc_valid
+    !local variables
+    real(8), allocatable:: f(:) !Kalman gain matrix
+    real(8), allocatable:: p(:,:) !covariance matrix
+    real(8), allocatable:: v1(:) !work array
+    real(8), allocatable:: x(:), g(:)
+    integer:: n, i, j, iter, idp, ios, iann, ndp_train, ndp_valid
+    integer:: iconf, iat, ig, ita, itt
+    real(8):: DDOT, tt, den, fcn_ann, fcn_ref
+    real(8):: r, rinv, r0, rf, alpha
+    real(8):: time_s, time_e, time1, time2, time3 !, time4
+    real(8):: dtime, dtime1, dtime2, dtime3, dtime4, dtime5, dtime6
+    real(8):: tt1, tt2, tt3, tt4, tt5, tt6
+    type(typ_ann_arr):: ann_arr
+    type(typ_opt_ann):: opt_ann
+    character(5):: stypat
+    real(8):: rcut, chi_rmse
+    character(50):: fname
+    real(8):: ssavg, ssmin, ssmax
+    real(8), allocatable:: features_train(:,:)
+    real(8), allocatable:: features_valid(:,:)
+    real(8), allocatable:: chi_ref_all_train(:,:)
+    real(8), allocatable:: chi_ref_all_valid(:,:)
+    real(8), allocatable:: chi_ref_train(:)
+    real(8), allocatable:: chi_ref_valid(:)
+    character(20):: str1, str2, str3, str4
+    character(21):: fn
+    character(50):: filename
+
+    call ann_arr%set_number_of_ann(1)
+    if(ann_arr%nann==0) stop 'ERROR: number of type of atoms zero in ann_train'
+    allocate(ann_arr%ann(ann_arr%nann))
+    ann_arr%approach=trim(parini%approach_ann)
+    do iann=1,ann_arr%nann
+        stypat=parini%stypat(iann)
+        fname = trim(stypat)//'.ann.input.yaml'
+        call get_symfunc_parameters_yaml(parini,iproc,fname,ann_arr%ann(iann),rcut)
+        ann_arr%rcut=rcut
+        call dict_free(ann_arr%ann(iann)%dict)
+        nullify(ann_arr%ann(iann)%dict)
+    enddo
+
+    call ann_arr%init_ann_arr()
+    n=sum(ann_arr%num(1:ann_arr%nann))
+    write(*,*) n,ann_arr%natmax
+    allocate(g(n))
+    allocate(x(n))
+    allocate(f(n),p(n,n),v1(n)) !,opt_ann%epotd(ann_arr%num(1)))
+    allocate(chi_ref_all_train(ann_arr%natmax,atoms_train%nconf))
+    allocate(chi_ref_all_valid(ann_arr%natmax,atoms_valid%nconf))
+    !open(unit=12,file='chi_ref_train.dat',status='old',iostat=ios)
+    do iconf=1,atoms_train%nconf
+    do iat=1,atoms_train%atoms(iconf)%nat
+        !read(12,*) str1,str2,str3,chi_ref_all_train(iat,iconf)
+        chi_ref_all_train(iat,iconf)=ann_arr_main%chi_ref_train(iconf)%chis(iat)
+        !write(*,*) str1,str2,str3,chi_ref_all_train(iat,iconf)
+    enddo
+    enddo
+    !close(12)
+    !open(unit=12,file='chi_ref_valid.dat',status='old',iostat=ios)
+    do iconf=1,atoms_valid%nconf
+    do iat=1,atoms_valid%atoms(iconf)%nat
+        !read(12,*) str1,str2,str3,chi_ref_all_valid(iat,iconf)
+        chi_ref_all_valid(iat,iconf)=ann_arr_main%chi_ref_valid(iconf)%chis(iat)
+        !write(*,*) str1,str2,str3,chi_ref_all_valid(iat,iconf)
+    enddo
+    enddo
+    !close(12)
+
+    do ita=1,parini%ntypat
+    ndp_train=0
+    do iconf=1,atoms_train%nconf
+        do iat=1,atoms_train%atoms(iconf)%nat
+            i=atoms_train%atoms(iconf)%itypat(iat)
+            if(i==ita) ndp_train=ndp_train+1
+        enddo
+    enddo
+    ndp_valid=0
+    do iconf=1,atoms_valid%nconf
+        do iat=1,atoms_valid%atoms(iconf)%nat
+            i=atoms_valid%atoms(iconf)%itypat(iat)
+            if(i==ita) ndp_valid=ndp_valid+1
+        enddo
+    enddo
+    !call init_opt_ann(ndp_train,opt_ann,ann_arr)
+    x(1:n)=0.d0
+    !write(*,*) x(:)
+    call get_opt_ann_x(ann_arr,opt_ann_main,x)
+    !write(*,*) x(:)
+    if(ann_arr%ann(1)%nn(0)/=symfunc_train%symfunc(1)%ng .or. ann_arr%ann(1)%nn(0)/=symfunc_valid%symfunc(1)%ng) then
+        stop 'ERROR: ann_arr%ann(1)%nn(0) and symfunc_train%symfunc(1)%ng differ!'
+    endif
+    allocate(features_train(symfunc_train%symfunc(1)%ng,ndp_train))
+    allocate(chi_ref_train(ndp_train))
+    idp=0
+    do iconf=1,atoms_train%nconf
+        do iat=1,atoms_train%atoms(iconf)%nat
+            i=atoms_train%atoms(iconf)%itypat(iat)
+            if(i==ita) then
+            idp=idp+1
+            chi_ref_train(idp)=chi_ref_all_train(iat,iconf)
+            do ig=1,symfunc_train%symfunc(iconf)%ng
+                features_train(ig,idp)=symfunc_train%symfunc(iconf)%y(ig,iat)
+                !write(21,'(es14.5,3i5)') symfunc_train%symfunc(iconf)%y(ig,iat),iconf,iat,ig
+            enddo
+            !write(22,'(es14.5,2i5)') chi_ref_all_train(iat,iconf),iconf,iat
+            endif
+        enddo
+    enddo
+    allocate(features_valid(symfunc_valid%symfunc(1)%ng,ndp_valid))
+    allocate(chi_ref_valid(ndp_valid))
+    idp=0
+    do iconf=1,atoms_valid%nconf
+        do iat=1,atoms_valid%atoms(iconf)%nat
+            i=atoms_valid%atoms(iconf)%itypat(iat)
+            if(i==ita) then
+            idp=idp+1
+            chi_ref_valid(idp)=chi_ref_all_valid(iat,iconf)
+            do ig=1,symfunc_valid%symfunc(iconf)%ng
+                features_valid(ig,idp)=symfunc_valid%symfunc(iconf)%y(ig,iat)
+                !write(21,'(es14.5,3i5)') symfunc_train%symfunc(iconf)%y(ig,iat),iconf,iat,ig
+            enddo
+            !write(22,'(es14.5,2i5)') chi_ref_all_train(iat,iconf),iconf,iat
+            endif
+        enddo
+    enddo
+    !do idp=1,ndp_train
+    !    do ig=1,ann_arr%ann(1)%nn(0)
+    !        write(ita*100+1,'(es14.5)') features_train(ig,idp)
+    !    enddo
+    !    write(ita*100+3,'(es14.5)') chi_ref_train(idp)
+    !enddo
+    !do idp=1,ndp_valid
+    !    do ig=1,ann_arr%ann(1)%nn(0)
+    !        write(ita*100+2,'(es14.5)') features_valid(ig,idp)
+    !    enddo
+    !    write(ita*100+4,'(es14.5)') chi_ref_valid(idp)
+    !enddo
+    !stop 'PPPPPPPPPPPPPPPP'
+    tt1=0.d0
+    do idp=1,ndp_train
+        tt1=tt1+chi_ref_train(idp)
+    enddo
+    tt1=tt1/real(ndp_train,kind=8)
+    tt1=real(int(tt1*1.d2),kind=8)*1.d-2
+    ann_arr%ann(1)%chi0=tt1
+    ann_arr_main%ann(ita)%chi0=tt1
+
+
+
+    p(1:n,1:n)=0.d0
+    do i=1,n
+        p(i,i)=1.d-2
+    enddo
+    if(trim(parini%approach_ann)=='cent2') then
+        r0=10.d0
+        alpha=100.d-2
+        rf=1.d-6
+    else
+        write(*,*) 'ERROR: ekf_rivals_fitchi to be used only with CENT2'
+        stop
+    endif
+    do iter=0,parini%nstep_opt_ann
+        !call yaml_sequence(advance='no',unit=ann_arr%iunit)
+        !call convert_opt_x_ann_arr(opt_ann,ann_arr)
+        call convert_x_ann_arr(n,x,ann_arr)
+
+        ann_arr_main%ann(ita)%a(:,:,:)=ann_arr%ann(1)%a(:,:,:)
+        ann_arr_main%ann(ita)%b(:,:)=ann_arr%ann(1)%b(:,:)
+        write(fn,'(a16,i5.5)') '.ann.param.yaml.',iter
+        filename=trim(parini%stypat(ita))//trim(fn)
+        !write(*,'(a)') trim(filename)
+        call yaml_comment(trim(filename))
+        call write_ann_yaml(parini,filename,ann_arr_main%ann(ita),ann_arr_main%rcut)
+
+        if(mod(iter,1)==0) then
+            !call analyze_epoch_init(parini,ann_arr)
+            call ann_evaluate_fitchi(parini,ita,iter,ann_arr,n,g, &
+                ndp_train,features_train,chi_ref_train, &
+                ndp_valid,features_valid,chi_ref_valid)
+            !call analyze_epoch_print(parini,iter,ann_arr)
+        endif
+        if(iter==parini%nstep_opt_ann) exit
+        r=(r0-rf)*exp(-alpha*(iter+parini%restart_iter))+rf
+        rinv=1.d0/r
+        write(31,'(i6,es14.5)') iter,r
+        chi_rmse=0
+        do idp=1,ndp_train
+            ann_arr%event='train'
+            !The following is allocated with ann_arr%num(1), this means number of
+            !nodes in the input layer is the same for all atom types.
+            !Therefore, it must be fixed later.
+            !g_per_atom=f_malloc([1.to.ann_arr%num(1),1.to.atoms%nat],id='g_per_atom') !HERE
+            !call convert_opt_x_ann_arr(opt_ann,ann_arr)
+            call convert_x_ann_arr(n,x,ann_arr)
+            call cal_chi_from_features(parini,ann_arr,features_train(1,idp),'train',n,g,fcn_ann)
+            fcn_ref=chi_ref_train(idp)
+            chi_rmse=chi_rmse+(fcn_ann-fcn_ref)**2
+            !if(parini%iverbose>=2) then
+            !    write(1370,'(2i4,2es18.8)') iter,idp,ann_arr%dpm_err, ann_arr%dpm_rmse
+            !end if
+            call DGEMV('T',n,n,1.d0,p,n,g,1,0.d0,v1,1)
+            !call cal_matvec_mpi(n,p,opt_ann%g,v1)
+            tt=DDOT(n,g,1,v1,1)
+            den=1.d0/(tt+r)
+            do j=1,n
+                do i=1,n
+                    p(i,j)=p(i,j)-v1(i)*v1(j)*den
+                    !if(i==j) p(i,j)=p(i,j)+1.d-1
+                    !write(21,'(2i5,es20.10)') i,j,p(i,j)
+                enddo
+            enddo
+                    !write(21,'(a)') '----------------------------------------'
+            !write(*,'(a,i7,i6,2es15.5)') 'forgetting ',iter,idp,r,den
+            call DGEMV('N',n,n,rinv,p,n,g,1,0.d0,f,1)
+            do i=1,n
+                !write(81,*) iter,idp,i,f(i)*(epotall(idp)-opt_ann%epot)
+                x(i)=x(i)+f(i)*(fcn_ref-fcn_ann)
+            enddo
+        enddo
+        chi_rmse=sqrt(chi_rmse/(3.d0*ndp_train))
+        write(45,'(i4,es18.8)') iter,chi_rmse
+    enddo
+    deallocate(features_train)
+    deallocate(chi_ref_train)
+    deallocate(features_valid)
+    deallocate(chi_ref_valid)
+    enddo !end of loop over ita
+    close(41)
+    close(42)
+    deallocate(f,p,v1) !,opt_ann%epotd)
+end subroutine ekf_rivals_fitchi
+!*****************************************************************************************
+subroutine cal_chi_from_features(parini,ann_arr,features,str_dataset,n,g,fcn_ann)
+    use mod_parini, only: typ_parini
+    use mod_ann, only: typ_ann_arr, convert_ann_epotd
+    implicit none
+    type(typ_parini), intent(in):: parini
+    type(typ_ann_arr), intent(inout):: ann_arr
+    real(8), intent(in):: features(ann_arr%ann(1)%nn(0))
+    character(*), intent(in):: str_dataset
+    integer, intent(in):: n
+    real(8), intent(out):: fcn_ann, g(n)
+    !local variables
+    integer:: ng
+    real(8):: out_ann, tt1
+    ng=ann_arr%ann(1)%nn(0)
+    ann_arr%ann(1)%y(1:ng,0)=features(1:ng)
+    if(trim(ann_arr%event)=='potential' .or. trim(ann_arr%event)=='evalu') then
+        call cal_architecture(ann_arr%ann(1),out_ann)
+        tt1=tanh(ann_arr%ann(1)%prefactor_chi*out_ann)
+        fcn_ann=ann_arr%ann(1)%ampl_chi*tt1+ann_arr%ann(1)%chi0
+    elseif(trim(ann_arr%event)=='train') then
+        call cal_architecture_der(ann_arr%ann(1),out_ann)
+        call convert_ann_epotd(ann_arr%ann(1),ann_arr%num(1),g)
+        tt1=tanh(ann_arr%ann(1)%prefactor_chi*out_ann)
+        fcn_ann=ann_arr%ann(1)%ampl_chi*tt1+ann_arr%ann(1)%chi0
+        g(1:n)=g(1:n)*ann_arr%ann(1)%ampl_chi*ann_arr%ann(1)%prefactor_chi*(1.d0-tt1**2)
+    else
+        stop 'ERROR: undefined content for ann_arr%event'
+    endif
+end subroutine cal_chi_from_features
+!*****************************************************************************************
+subroutine ann_evaluate_fitchi(parini,ita,iter,ann_arr,n,g,ndp_train,ft_train,chi_ref_train,ndp_valid,ft_valid,chi_ref_valid)
+    use mod_parini, only: typ_parini
+    use mod_ann, only: typ_ann_arr
+    implicit none
+    type(typ_parini), intent(in):: parini
+    integer, intent(in):: ita, iter
+    type(typ_ann_arr), intent(inout):: ann_arr
+    integer, intent(in):: n
+    real(8), intent(inout):: g(n)
+    integer, intent(in):: ndp_train, ndp_valid
+    real(8), intent(in):: ft_train(ann_arr%ann(1)%nn(0),ndp_train), chi_ref_train(ndp_train)
+    real(8), intent(in):: ft_valid(ann_arr%ann(1)%nn(0),ndp_valid), chi_ref_valid(ndp_valid)
+    !local variables
+    real(8):: rmse_train, rmse_valid, chi, tt1, tt2, tt3, ss1, ss2
+    integer:: idp, iconf, jdp, jconf
+    !allocate(chiall(ndp_train))
+    ann_arr%event='evalu'
+    !iconf=0
+    rmse_train=0.d0
+    do idp=1,ndp_train
+        call cal_chi_from_features(parini,ann_arr,ft_train(1,idp),'train',n,g,chi)
+        !chiall(idp)=chi
+        !if(mod(idp-1,40)==0) iconf=iconf+1
+        !write(1000+iter,*) iconf,abs(chi-chi_ref_train(idp))
+        rmse_train=rmse_train+(chi-chi_ref_train(idp))**2
+    enddo
+    !close(1000+iter)
+    rmse_train=sqrt(rmse_train/real(ndp_train,kind=8))
+    !iconf=0
+    rmse_valid=0.d0
+    do idp=1,ndp_valid
+        call cal_chi_from_features(parini,ann_arr,ft_valid(1,idp),'valid',n,g,chi)
+        !chiall(idp)=chi
+        !if(mod(idp-1,40)==0) iconf=iconf+1
+        !write(2000+iter,*) iconf,abs(chi-chi_ref_valid(idp))
+        rmse_valid=rmse_valid+(chi-chi_ref_valid(idp))**2
+    enddo
+    !close(2000+iter)
+    rmse_valid=sqrt(rmse_valid/real(ndp_valid,kind=8))
+    write(80+ita,'(a,i5,2es14.5)') 'RMSE ',iter,rmse_train,rmse_valid
+    !-------------------------------------------------------
+    !if(iter==0) then
+    !tt1=0.d0
+    !tt2=0.d0
+    !tt3=0.d0
+    !iconf=0
+    !do idp=1,ndp_train
+    !    if(mod(idp-1,40)==0) iconf=iconf+1
+    !    jconf=0
+    !    do jdp=1,idp-1
+    !        if(mod(jdp-1,40)==0) jconf=jconf+1
+    !        ss1=sqrt(sum((ft_train(1:ann_arr%ann(1)%nn(0),idp)-ft_train(1:ann_arr%ann(1)%nn(0),jdp))**2))
+    !        ss2=abs(chi_ref_train(idp)-chi_ref_train(jdp))
+    !        tt1=tt1+ss1
+    !        tt2=tt2+ss2
+    !        tt3=tt3+1.d0
+    !        if(ss1<0.05 .and. ss2>0.005) write(65,'(i4,2i6,2f15.5)') iter,iconf,jconf,ss1,ss2
+    !    enddo
+    !enddo
+    !tt1=tt1/tt3
+    !tt2=tt2/tt3
+    !write(*,'(a,2f15.5)') 'TT1,TT2 ',tt1,tt2
+    !!deallocate(chiall)
+    !endif
+end subroutine ann_evaluate_fitchi
 !*****************************************************************************************

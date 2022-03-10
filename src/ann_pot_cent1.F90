@@ -20,6 +20,7 @@ subroutine cal_ann_cent1(parini,atoms,symfunc,ann_arr)
     real(8):: epot_c, out_ann
     real(8):: time1, time2, time3, time4, time5, time6, time7, time8
     real(8):: tt1, tt2, tt3, fx_es, fy_es, fz_es, hinv(3,3), vol
+    real(8):: dpm_err,dpx,dpy,dpz
     call f_routine(id='cal_ann_cent1')
     if(.not. (trim(parini%task)=='ann' .and. trim(parini%subtask_ann)=='train')) then
         allocate(ann_arr%fat_chi(1:3,1:atoms%nat))
@@ -42,8 +43,9 @@ subroutine cal_ann_cent1(parini,atoms,symfunc,ann_arr)
     if(parini%iverbose>=2) call cpu_time(time1)
     call init_electrostatic_cent1(parini,atoms,ann_arr,ann_arr%a,poisson)
     if(parini%iverbose>=2) call cpu_time(time2)
+    call symfunc%init_symfunc(parini%mpi_env)
     if(ann_arr%compute_symfunc) then
-        call symmetry_functions(parini,ann_arr,atoms,symfunc,.true.)
+        call symfunc%get_symfunc(parini,ann_arr,atoms,.true.)
     else
         symfunc%linked_lists%rcut=ann_arr%rcut
         symfunc%linked_lists%triplex=.true.
@@ -121,6 +123,13 @@ subroutine cal_ann_cent1(parini,atoms,symfunc,ann_arr)
         ann_arr%fchi_angle=tt3/(tt1*tt2)
         ann_arr%fchi_norm=tt2/tt1
     endif
+    call get_dpm_cent1(atoms,dpx,dpy,dpz,ann_arr%dpm_err)
+    if(parini%iverbose>=2) then
+        write(1390,'(3es18.8,a3,3es18.8,a3,es18.8)')dpx,dpy,dpz,' | ',atoms%dpm(1),atoms%dpm(2),atoms%dpm(3),' | ',ann_arr%dpm_err
+    end if
+    atoms%dpm(1)=dpx
+    atoms%dpm(2)=dpy
+    atoms%dpm(3)=dpz
     call fini_electrostatic_cent1(parini,ann_arr,atoms,poisson)
     !call repulsive_potential_cent(parini,atoms,ann_arr)
     call getvol_alborz(atoms%cellvec,vol)
@@ -150,6 +159,7 @@ subroutine cal_ann_cent1(parini,atoms,symfunc,ann_arr)
         deallocate(ann_arr%fatpq)
         deallocate(ann_arr%stresspq)
     endif
+    call symfunc%fini_symfunc()
     call f_release_routine()
 end subroutine cal_ann_cent1
 !*****************************************************************************************
@@ -225,7 +235,7 @@ subroutine get_qat_from_chi_dir(parini,ann_arr,atoms,a)
     type(typ_atoms), intent(inout):: atoms
     real(8), intent(inout):: a(atoms%nat+1,atoms%nat+1)
     !local variables
-    integer:: info !, iat
+    integer:: info , iat
     associate(nat=>atoms%nat)
     if(.not. (trim(parini%task)=='ann' .and. trim(parini%subtask_ann)=='train')) then
         allocate(ann_arr%ipiv(1:nat+1))
@@ -251,6 +261,9 @@ subroutine get_qat_from_chi_dir(parini,ann_arr,atoms,a)
         stop
     endif
     atoms%qat(1:nat)=ann_arr%qq(1:nat)
+    do iat=1,nat
+        write(20,'(a3,4es18.6)') atoms%sat(iat),atoms%ratp(1,iat),atoms%ratp(2,iat),atoms%ratp(3,iat),atoms%qat(iat)
+    end do
     call charge_analysis(parini,atoms,ann_arr)
     if(parini%iverbose>1) then
         call yaml_map('Lagrange',ann_arr%qq(nat+1))
@@ -312,7 +325,7 @@ subroutine init_electrostatic_cent1(parini,atoms,ann_arr,a,poisson)
         endif
         call get_amat_cent1(atoms,ann_arr,a)
     elseif(trim(ann_arr%syslinsolver)=='operator') then
-        if(trim(atoms%boundcond)=='bulk' .or. trim(atoms%boundcond)=='slab') then
+        if(trim(atoms%boundcond)=='bulk' .or. trim(atoms%boundcond)=='slab' .or. trim(atoms%boundcond)=='free') then
             allocate(gausswidth(atoms%nat))
             gausswidth(:)=ann_arr%ann(atoms%itypat(:))%gausswidth
             poisson%task_finit="alloc_rho:set_ngp"
@@ -412,6 +425,7 @@ subroutine cal_electrostatic_ann(parini,atoms,ann_arr,a,poisson)
     use mod_atoms, only: typ_atoms, update_ratp
     use mod_ann, only: typ_ann_arr
     use mod_electrostatics, only: typ_poisson
+    use hartree_mod, only: method_samare
     use dynamic_memory
     implicit none
     type(typ_parini), intent(in):: parini
@@ -425,7 +439,7 @@ subroutine cal_electrostatic_ann(parini,atoms,ann_arr,a,poisson)
     real(8):: dx, dy, dz, r, beta_iat, beta_jat, ehartree_t
     real(8), allocatable:: gausswidth(:)
     allocate(gausswidth(1:atoms%nat))
-    if(trim(atoms%boundcond)=='free') then
+    if(trim(atoms%boundcond)=='free' .and. trim(ann_arr%syslinsolver)/='operator') then
         pi=4.d0*atan(1.d0)
         tt2=0.d0
         tt3=0.d0
@@ -452,11 +466,17 @@ subroutine cal_electrostatic_ann(parini,atoms,ann_arr,a,poisson)
             enddo
         enddo
         ann_arr%epot_es=tt2+tt3
-    elseif(trim(atoms%boundcond)=='slab' .or. trim(atoms%boundcond)=='bulk') then
+    elseif(trim(atoms%boundcond)=='slab' .or. trim(atoms%boundcond)=='bulk' .or. trim(atoms%boundcond)=='free') then
+        if (parini%bigdft_kwald) then 
+            method_samare = "kwald"
+        endif
         gausswidth(:)=ann_arr%ann(atoms%itypat(:))%gausswidth
         call get_hartree(parini,poisson,atoms,gausswidth,ehartree_t)
         poisson%gw(1:poisson%nat)=poisson%gw_ewald(1:poisson%nat)
         call get_hartree_force(parini,poisson,atoms)
+        if (parini%bigdft_kwald) then 
+            method_samare = "defau"
+        endif
     else
         stop 'ERROR: the requested BCs is not yet implemented.'
     endif
@@ -651,7 +671,7 @@ subroutine get_qat_from_chi_operator(parini,poisson,ann_arr,atoms)
     !    read(1358,*) tt,atoms%qat(iat)
     !enddo
     !close(1358)
-    if(abs(atoms%qtot)>1.d-10) then
+    if(abs(atoms%qtot)>1.d-6 .and. trim(atoms%boundcond)/='free') then
         write(*,'(a)') 'ERROR: Operator approach not ready for ionized systems.'
         write(*,'(a)') '       Correct the initial guess of atomic charge assignment.'
         stop
@@ -824,4 +844,28 @@ subroutine get_qat_from_chi_operator(parini,poisson,ann_arr,atoms)
     deallocate(h)
     deallocate(gt)
 end subroutine get_qat_from_chi_operator
+!*****************************************************************************************
+subroutine get_dpm_cent1(atoms,dpx,dpy,dpz,dpm_err)
+    use mod_atoms, only: typ_atoms
+    use dynamic_memory
+    implicit none
+    type(typ_atoms), intent(in):: atoms
+    real(8), intent(out):: dpm_err 
+    real(8), intent(out) :: dpx, dpy, dpz
+    !Local Variables
+    integer :: iat
+    real(8) :: centroid_x, centroid_y, centroid_z
+        dpx = 0.d0
+        dpy = 0.d0
+        dpz = 0.d0
+        centroid_x=sum(atoms%ratp(1,:))/atoms%nat
+        centroid_y=sum(atoms%ratp(2,:))/atoms%nat
+        centroid_z=sum(atoms%ratp(3,:))/atoms%nat
+        do iat=1, atoms%nat
+            dpx=dpx+(atoms%ratp(1,iat)-centroid_x)*(atoms%qat(iat))
+            dpy=dpy+(atoms%ratp(2,iat)-centroid_y)*(atoms%qat(iat))
+            dpz=dpz+(atoms%ratp(3,iat)-centroid_z)*(atoms%qat(iat))
+        end do
+        dpm_err=((dpx-atoms%dpm(1))**2+(dpy-atoms%dpm(2))**2+(dpz-atoms%dpm(3))**2)
+end subroutine get_dpm_cent1
 !*****************************************************************************************

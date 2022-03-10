@@ -1,6 +1,7 @@
 !*****************************************************************************************
 subroutine miscellaneous_task(parini)
     use mod_parini, only: typ_parini
+    use mod_qat_target, only: get_qat_target
     implicit none
     type(typ_parini), intent(in):: parini
     !local variables
@@ -12,6 +13,8 @@ subroutine miscellaneous_task(parini)
         call subtask_fit_elecpot(parini)
     elseif(trim(parini%subtask_misc)=='test_free_bps') then
         call test_free_BPS(parini)
+    elseif(trim(parini%subtask_misc)=='get_qat_target') then
+        call get_qat_target(parini)
     else
         write(*,'(2a)') 'ERROR: unknown parini%subtask_misc ',trim(parini%subtask_misc)
         stop

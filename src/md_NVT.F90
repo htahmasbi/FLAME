@@ -1,13 +1,17 @@
 !*****************************************************************************************
 subroutine md_nvt_langevin(parini,atoms)
     use mod_parini, only: typ_parini
-    use mod_potential, only: potential, perfstatus
+    use mod_potential, only: potcode, perfstatus
     use mod_atoms, only: typ_atoms, typ_file_info
     use mod_atoms, only: get_rat, update_ratp, update_rat, set_rat
     use mod_acf, only: acf_write
     use mod_velocity, only: set_velocities
     use mod_dynamics, only: dt, nmd ,nfreq
+    !use mod_dynamics, only: dt, nmd !EHSAN
     use mod_processors, only: iproc
+    use mod_potential, only: init_potential_forces
+    use mod_potential, only: fini_potential_forces
+    use mod_potential, only: cal_potential_forces
     !use mod_potential, only: bias 
     implicit none
     type(typ_parini), intent(inout):: parini
@@ -16,6 +20,7 @@ subroutine md_nvt_langevin(parini,atoms)
     type(typ_file_info):: file_info
     integer:: iat, ierr, nat_t, i
     integer:: imd, ff , rmd
+    !integer:: imd, ff !EHSAN
     real(8):: etot, epotold, etotold
     real(8):: DNRM2, fnrm, t1, aboltzmann, totmass, temp, etotavg
     real(8):: t2,t3,t4 ,tt
@@ -27,16 +32,19 @@ subroutine md_nvt_langevin(parini,atoms)
     real(8) :: sum1, sum2, sum3
     real(8) :: kt, temp_prev, tol, tolerance 
     character(56):: comment , nn
+    !character(56):: comment !EHSAN
     real(8):: langev(atoms%nat), forces_langevin(3,atoms%nat)
     real(8):: rat_next(3,atoms%nat), vat_old(3,atoms%nat)
     real(8):: rat_init(3,atoms%nat)
-    real(8):: r, dx(3) , rsq, msd1, msd2, msd3,pi,dipole
+    real(8):: r, dx(3) , rsq, msd1, msd2, msd3,pi,dipole,dy(3,atoms%nat)
     pi=4.d0*atan(1.d0)
+    dy=0.d0
 
     call random_seed() 
     call get_rat(atoms,rat_init)
     !  ___________parameters_______________________________________
-    gama=1.d-3
+    gama=1.d-2
+    !omega = parini%highest_frequency ! THz
     aboltzmann= 3.1668139952584056d-06
     temp_trget = parini%temp_dynamics
     kt = aboltzmann*temp_trget
@@ -50,6 +58,8 @@ subroutine md_nvt_langevin(parini,atoms)
         open(unit=1111,file="displacement.dat",status='replace')
         write(21,'(a9,4a25)') "imd","E_tot",'E_pot','E_kin','Temp'
     endif
+    !open(unit=1000,file="velocity",status='replace') !EHSAN
+    !open(unit=1111,file="displace.txt",status='replace') !EHSAN
     call init_potential_forces(parini,atoms)
     call get_atomic_mass(atoms,totmass)
     langev(:)=sqrt(2*gama*atoms%amass(:)*kt/dt)
@@ -59,14 +69,25 @@ subroutine md_nvt_langevin(parini,atoms)
         open(unit=1003,file="restart.dat",status='old')
         read(1003,*) nn  , rmd
         read(1003,*)  
+        !open(unit=1001,file="velocity_r",status='old') !EHSAN
+        !read(1001,*) !EHSAN
+        !read(1001,*)  !EHSAN
+        !read(1001,*) !EHSAN
         do iat=1,atoms%nat
             read(1003,'(3es25.17)') atoms%ratp(1,iat),atoms%ratp(2,iat),atoms%ratp(3,iat)
+            !read(1001,*) atoms%vat(1,iat),atoms%vat(2,iat),atoms%vat(3,iat) !EHSAN
         enddo
         read(1003,*) 
         do iat=1,atoms%nat
             read(1003,'(3es25.17)') atoms%vat(1,iat),atoms%vat(2,iat),atoms%vat(3,iat)
         enddo
+        read(1003,*) 
+        read(1003,*) 
+        do iat=1,atoms%nat
+            read(1003,'(3es25.17)') dy(1,iat),dy(2,iat),dy(3,iat)
+        enddo
         close(1003)
+        rat_init(:,:)=atoms%ratp(:,:) 
         call update_rat(atoms,upall=.true.)
         call update_ratp(atoms)
         write(21,"(a,i8,a)") "#   *********************** restart from imd:",rmd,"  **************************"
@@ -92,7 +113,17 @@ subroutine md_nvt_langevin(parini,atoms)
         file_info%print_force=parini%print_force_dynamics
         call acf_write(file_info,atoms=atoms,strkey='trajectory')
     endif
+    !file_info%filename_positions='posout.acf' !EHSAN
+    !file_info%file_position='new' !EHSAN
+    !file_info%print_force=parini%print_force_dynamics !EHSAN
+    !call acf_write(file_info,atoms=atoms,strkey='posout') !EHSAN
     !____________________________________________________________________
+    !call ekin_temprature(atoms,temp,vcm,rcm,totmass)  !EHSAN
+    !etot=atoms%epot+atoms%ekin !EHSAN
+    !etotold=etot !EHSAN
+    !write(21,'(i9,4es25.15)') 0,etot,atoms%epot,atoms%ekin,temp !EHSAN
+    !write(22,'(i9,6es20.10)') 0,rcm(1:3),vcm(1:3) !EHSAN
+   !_________________________ The first md step ________ !EHSAN_________________
     call set_langevin_randforce(eta,atoms%nat)
     if (parini%restart_dynamics )then
         t1=dt*dt
@@ -116,8 +147,19 @@ subroutine md_nvt_langevin(parini,atoms)
         enddo
         call update_rat(atoms,upall=.true.)
     endif
+    !call update_ratp(atoms) !EHSAN
+    !do iat=1,atoms%nat !EHSAN
+    !    forces_langevin(1:3,iat)=atoms%fat(1:3,iat)+langev(iat)*eta(1:3,iat)-gama*atoms%amass(iat)*atoms%vat(1:3,iat) !EHSAN
+    !    rat_next(1:3,iat)=atoms%ratp(1:3,iat) + t1*forces_langevin(1:3,iat)/atoms%amass(iat) + dt*atoms%vat(1:3,iat) !EHSAN
+    !    atoms%vat(1:3,iat)=(rat_next(1:3,iat)-atoms%ratp(1:3,iat))/dt !EHSAN
+    !    atoms%ratp(1:3,iat)=rat_next(1:3,iat) !EHSAN
+    !enddo !EHSAN
+    !call update_rat(atoms,upall=.true.) !EHSAN
+    !!call back_to_cell(atoms) !EHSAN
+
     !_____________________________________________________________________
     do imd=1+rmd,nmd+rmd
+    !do imd=2,nmd !EHSAN
         parini%time_dynamics = (imd-1)*dt
 
         dipole=0.d0
@@ -136,6 +178,7 @@ subroutine md_nvt_langevin(parini,atoms)
         etotold=etot
         write(21,'(i9,4es25.15)') imd-1,etot,atoms%epot,atoms%ekin,temp
        ! write(22,'(i9,6es20.10)') imd-1,rcm(1:3),vcm(1:3)
+        !write(22,'(i9,6es20.10)') imd-1,rcm(1:3),vcm(1:3) !EHSAN
 
         call set_langevin_randforce(eta,atoms%nat)
         call update_ratp(atoms)
@@ -163,8 +206,22 @@ subroutine md_nvt_langevin(parini,atoms)
         call update_ratp(atoms)
         atoms%vat = (rat_next - atoms%ratp )/dt
         call set_rat(atoms,rat_next,setall=.true.)
+        ! ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++=
+        do iat=1,atoms%nat
+            dx(1:3)=atoms%ratp(:,iat)-rat_init(:,iat)+dy(:,iat)
+            rsq=(dx(1)**2+dx(2)**2+dx(3)**2)
+            r=sqrt(dx(1)**2+dx(2)**2+dx(3)**2)
+            msd1 = msd1 + rsq                !all directions
+            msd2 = msd2 + dx(1)**2+dx(2)**2  !x,y directions
+            msd3 = msd3 + dx(3)**2           !z   direction
+        enddo
+        write(100,*) imd, parini%time_dynamics, msd1/atoms%nat
+        ! ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++=
         if(mod(imd,nfreq)==0) then
+        !!call back_to_cell(atoms) !EHSAN
+        !if(mod(imd,100)==0) then !EHSAN
             file_info%file_position='append'
+        !    call acf_write(file_info,atoms=atoms,strkey='posout') !EHSAN
             call acf_write(file_info,atoms=atoms,strkey='trajectory')
             call cal_potential_forces(parini,atoms)
 
@@ -179,7 +236,6 @@ subroutine md_nvt_langevin(parini,atoms)
                     write(1003,'(3es25.17)') atoms%vat(1,iat),atoms%vat(2,iat),atoms%vat(3,iat)
                 enddo
             write(1003,*) "ENER:" ,  atoms%epot
-            close(1003)
 
 
 
@@ -194,8 +250,10 @@ subroutine md_nvt_langevin(parini,atoms)
             msd2= 0.d0
             msd3= 0.d0
             call update_ratp(atoms)
+            write(1003,*) "dx:" 
             do iat=1,atoms%nat
-                dx(1:3)=atoms%ratp(:,iat)-rat_init(:,iat)
+                dx(1:3)=atoms%ratp(:,iat)-rat_init(:,iat)+dy(:,iat)
+                write(1003,'(3es25.17)') dx
                 rsq=(dx(1)**2+dx(2)**2+dx(3)**2)
                 r=sqrt(dx(1)**2+dx(2)**2+dx(3)**2)
                 msd1 = msd1 + rsq                !all directions
@@ -208,21 +266,26 @@ subroutine md_nvt_langevin(parini,atoms)
             write(1111,*) '  MSD_z  = ', msd3/atoms%nat 
             write(1111,*) '# -----------------------------------------------'
 
+            close(1003)
         endif
         etotold=etot
     enddo !end of loop over imd
     close(21)
-    call final_potential_forces(parini,atoms)
+    !close(1000) !EHSAN
+    call fini_potential_forces(parini,atoms)
 end subroutine md_nvt_langevin
 !*****************************************************************************************
 subroutine md_nvt_nose_hoover_cp(parini,atoms)
     use mod_parini, only: typ_parini
-    use mod_potential, only: potential, perfstatus
+    use mod_potential, only: potcode, perfstatus
     use mod_atoms, only: typ_atoms, typ_file_info, set_rat, get_rat, update_ratp
     use mod_velocity, only: set_velocities
     use mod_acf, only: acf_write
     use mod_dynamics, only: dt, nmd
     use mod_processors, only: iproc
+    use mod_potential, only: init_potential_forces
+    use mod_potential, only: fini_potential_forces
+    use mod_potential, only: cal_potential_forces
     !use mod_potential, only: bias 
     implicit none
     type(typ_parini), intent(inout):: parini
@@ -253,9 +316,12 @@ subroutine md_nvt_nose_hoover_cp(parini,atoms)
     open(unit=1000,file="velocity",status='replace')
     open(unit=1111,file="displacement.dat",status='replace')
     file_info%filename_positions='trajectory.acf'
+    !open(unit=1111,file="displace.txt",status='replace') !EHSAN
+    !file_info%filename_positions='posout.acf' !EHSAN
     file_info%file_position='new'
     file_info%print_force=parini%print_force_dynamics
     call acf_write(file_info,atoms=atoms,strkey='trajectory')
+    !call acf_write(file_info,atoms=atoms,strkey='posout') !EHSAN
 
     !  ___________parameters_______________________________________
     ntherm=3
@@ -310,6 +376,7 @@ subroutine md_nvt_nose_hoover_cp(parini,atoms)
     write(*,'(a,2e20.10)') 'epotold,epot',epotold,atoms%epot
     write(21,'(i9,4es25.15)') 0,etot,atoms%epot,atoms%ekin,temp
    ! write(22,'(i9,6es20.10)') 0,rcm(1:3),vcm(1:3)
+    !write(22,'(i9,6es20.10)') 0,rcm(1:3),vcm(1:3) !EHSAN
    !_________________________ The first md step _________________________
     imd=1
     t1=0.5*dt*dt
@@ -339,6 +406,7 @@ subroutine md_nvt_nose_hoover_cp(parini,atoms)
         etotold=etot
         write(21,'(i9,4es25.15)') imd-1,etot,atoms%epot,atoms%ekin,temp
       !  write(22,'(i9,6es20.10)') imd-1,rcm(1:3),vcm(1:3)
+    !    write(22,'(i9,6es20.10)') imd-1,rcm(1:3),vcm(1:3) !EHSAN
         call update_ratp(atoms)
         do iat=1,atoms%nat
             forces_nosehoover(1:3,iat)=atoms%fat(1:3,iat)-atoms%amass(iat)*atoms%vat(1:3,iat)*dzeta(1:3,iat,1)
@@ -375,6 +443,7 @@ subroutine md_nvt_nose_hoover_cp(parini,atoms)
         if(mod(imd,100)==0) then
             file_info%file_position='append'
             call acf_write(file_info,atoms=atoms,strkey='trajectory')
+    !        call acf_write(file_info,atoms=atoms,strkey='posout') !EHSAN
             write(1111,*) '#'
             write(1111,*) '#    imd = ',imd, parini%time_dynamics
             write(1111,*) '#'
@@ -403,21 +472,26 @@ subroutine md_nvt_nose_hoover_cp(parini,atoms)
          !   enddo
         endif
         write(221,'(i9,4es25.15)') imd+1,etot,atoms%epot,atoms%ekin,temp
+    !    write(221,'(i9,4es25.15)') imd,etot,atoms%epot,atoms%ekin,temp !EHSAN
         etotold=etot
         
     enddo !end of loop over imd
     close(1000)
-    call final_potential_forces(parini,atoms)
+    call fini_potential_forces(parini,atoms)
 end subroutine md_nvt_nose_hoover_cp
 !*****************************************************************************************
 subroutine md_nvt_nose_hoover_chain(parini,atoms)
     use mod_parini, only: typ_parini
-    use mod_potential, only: potential, perfstatus
+    use mod_potential, only: potcode, perfstatus
     use mod_atoms, only: typ_atoms, typ_file_info, get_rat, update_ratp, update_rat
     use mod_velocity, only: set_velocities
     use mod_acf, only: acf_write
     use mod_dynamics, only: dt, nmd, nfreq
+    !use mod_dynamics, only: dt, nmd !EHSAN
     use mod_processors, only: iproc
+    use mod_potential, only: init_potential_forces
+    use mod_potential, only: fini_potential_forces
+    use mod_potential, only: cal_potential_forces
     !use mod_potential, only: bias 
     implicit none
     type(typ_parini), intent(inout):: parini
@@ -426,6 +500,7 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
     type(typ_file_info):: file_info
     integer:: iat, ierr, nat_t, i, j
     integer:: imd, ff,ntherm, ith, rmd
+    !integer:: imd, ff,ntherm, ith !EHSAN
     real(8):: etot, epotold, etotold
     real(8):: DNRM2, fnrm, t1, aboltzmann, totmass, temp, etotavg
     real(8):: t2,t3,t4 
@@ -436,6 +511,7 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
     real(8) :: sum1, sum2, sum3
     real(8) :: kt, temp_prev, tol, tolerance 
     character(56):: comment , nn
+    !character(56):: comment !EHSAN
     real(8):: omega, tt
     real(8), allocatable :: zeta(:), dzeta(:), mass_q(:), azeta(:)
     real(8):: rat_init(3,atoms%nat)
@@ -443,6 +519,7 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
     real(8):: nof, enhc 
     real(8):: dt2, dt4, dt8 
     integer:: vfile
+    !integer:: jj(3,atoms%nat), vfile !EHSAN
     real(8):: temp1, temp2
     real(8):: sumf1, sumf2, sumf3
     real(8):: tau, time_unit
@@ -465,6 +542,9 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         open(unit=1112,file="MSD.dat",status='replace')
         write(1112,'(a15,3a25)') "imd " , " MSD       "  , " MSD_xy       " , " MSD_z       " 
     endif
+    !open(unit=1111,file="displace.txt",status='replace') !EHSAN
+    !open(unit=1112,file="MSD.txt",status='replace') !EHSAN
+    !write(1112,'(a15,3a25)') "imd " , " MSD       "  , " MSD_xy       " , " MSD_z       "  !EHSAN
 
     file_info%filename_positions='trajectory.acf'
     if (parini%restart_dynamics )then
@@ -474,6 +554,9 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         file_info%print_force=parini%print_force_dynamics
         call acf_write(file_info,atoms=atoms,strkey='trajectory')
     endif
+    !file_info%file_position='new' !EHSAN
+    !file_info%print_force=parini%print_force_dynamics !EHSAN
+    !call acf_write(file_info,atoms=atoms,strkey='trajectory') !EHSAN
 
     !  ___________parameters_______________________________________
     ntherm = parini%ntherm
@@ -496,6 +579,8 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         if(atoms%bemoved(2,iat)) nof=nof+1
         if(atoms%bemoved(3,iat)) nof=nof+1
     enddo
+    !jj=atoms%bemoved !EHSAN
+    !nof= (-sum(jj)) !EHSAN
     !nof = (3.d0*atoms%nat)
     !nof = (3.d0*atoms%nat+ntherm)
     !ekin_target=0.5d0*nof*aboltzmann*parini%init_temp_dynamics
@@ -520,8 +605,13 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         open(unit=1003,file="restart.dat",status='old')
         read(1003,*) nn  , rmd
         read(1003,*)  
+    !    open(unit=1001,file="velocity_r",status='old') !EHSAN
+    !    read(1001,*) !EHSAN
+    !    read(1001,*)  !EHSAN
+    !    read(1001,*) !EHSAN
         do iat=1,atoms%nat
             read(1003,'(3es25.17)') atoms%ratp(1,iat),atoms%ratp(2,iat),atoms%ratp(3,iat)
+    !        read(1001,*) atoms%vat(1,iat),atoms%vat(2,iat),atoms%vat(3,iat) !EHSAN
         enddo
         read(1003,*) 
         do iat=1,atoms%nat
@@ -530,11 +620,13 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         read(1003,*) 
         do ith=1,ntherm
             read(1003,*) zeta(ith),dzeta(ith)
+    !        read(1001,*) zeta(ith),dzeta(ith) !EHSAN
         enddo
         close(1003)
         call update_rat(atoms,upall=.true.)
         call update_ratp(atoms)
         write(21,"(a,i8,a)") "#   *********************** restart from imd:",rmd,"  **************************"
+    !    close(1001) !EHSAN
     else
         rmd = 0
         if ( parini%init_temp_dynamics==0.d0) then
@@ -549,6 +641,7 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
     rcm_init = rcm 
     !____________________________________________________________________
     do imd=1+rmd,nmd+rmd
+    !do imd=1,nmd !EHSAN
         parini%time_dynamics = (imd-1)*dt
         epotold=atoms%epot
 
@@ -566,6 +659,20 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         !        endif
         !    enddo
         !endif
+    !    if(parini%vflip_dynamics) then !EHSAN
+    !        call update_ratp(atoms) !EHSAN
+    !        do iat=1,atoms%nat !EHSAN
+    !            if (atoms%cellvec(3,3)-atoms%ratp(3,iat) < 5.5d0 .and. atoms%vat(3,iat) > 0.d0)then !EHSAN
+    !                atoms%vat(3,iat) = -atoms%vat(3,iat) !EHSAN
+    !            endif !EHSAN
+    !        enddo !EHSAN
+    !        call update_ratp(atoms) !EHSAN
+    !        do iat=1,atoms%nat !EHSAN
+    !            if (atoms%ratp(3,iat) < 5.5d0 .and. atoms%vat(3,iat) < 0.d0)then !EHSAN
+    !                atoms%vat(3,iat) = -atoms%vat(3,iat) !EHSAN
+    !            endif !EHSAN
+    !        enddo !EHSAN
+    !    endif !EHSAN
         call ekin_temprature(atoms,temp,vcm,rcm,totmass) 
         temp=temp*(1.5d0*atoms%nat)/(0.5*nof)
         call cal_potential_forces(parini,atoms)
@@ -591,10 +698,12 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         write(*,'(a,2e20.10)') 'epotold,epot',epotold,atoms%epot
         write(21,'(i9,5es25.15)') imd,etot-atoms%ebattery,atoms%epot-atoms%ebattery,atoms%ekin,temp,enhc
        ! write(22,'(i9,6es20.10)') imd,rcm(1:3),vcm(1:3)
+    !    write(22,'(i9,6es20.10)') imd,rcm(1:3),vcm(1:3) !EHSAN
 
     !___________________  some steps temperature rescaling for pre_equilibrium  __________________
 
         if (imd<20 .and. (.not. parini%restart_dynamics)) then
+    !    if (imd<200 .and. (.not. parini%restart_dynamics)) then !EHSAN
             tt=(ekin_target/atoms%ekin)/(3.d0*atoms%nat)*nof
             atoms%vat =  atoms%vat*sqrt(tt)
         endif
@@ -684,6 +793,11 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
         enddo
         dzeta(ntherm) =dzeta(ntherm) + azeta(ntherm) *dt4;
 
+    !    if(mod(imd-1,100)==0) then !EHSAN
+    !        call write_trajectory_velocity(parini,atoms,file_info,rat_init,imd,ntherm,zeta,dzeta) !EHSAN
+    !    endif !EHSAN
+    !    etotold=etot !EHSAN
+    !enddo !end of loop over imd !EHSAN
 !____________________ write restart ________________________________________________   
      if(mod(imd,nfreq)==0) then
          file_info%file_position='append'
@@ -725,12 +839,29 @@ subroutine md_nvt_nose_hoover_chain(parini,atoms)
          enddo
          write(1112,'(i15,3es25.14)') imd-1 , msd1/atoms%nat , msd2/atoms%nat, msd3/atoms%nat 
      endif
+    !open(unit=1003,file="velocity_r",status='replace') !EHSAN
 
         etotold=etot
     enddo !end of loop over imd
     close(21)
+    !write(1003,*) '#' !EHSAN
+    !write(1003,*) '#    imd = ', imd !EHSAN
+    !write(1003,*) '#' !EHSAN
+    !do iat=1,atoms%nat !EHSAN
+    !    write(1003,'(3es25.17)') atoms%vat(1,iat),atoms%vat(2,iat),atoms%vat(3,iat) !EHSAN
+    !enddo !EHSAN
+    !do ith=1,ntherm !EHSAN
+    !    write(1003,'(2es25.17)') zeta(ith),dzeta(ith) !EHSAN
+    !enddo !EHSAN
+    !file_info%filename_positions='posout.acf' !EHSAN
+    !file_info%file_position='new' !EHSAN
+    !file_info%print_force=parini%print_force_dynamics !EHSAN
+    !call acf_write(file_info,atoms,strkey='posout') !EHSAN
+    !close(1003) !EHSAN
+    !file_info%filename_positions='posout.yaml' !EHSAN
+    !call write_yaml_conf(file_info,atoms,'posout') !EHSAN
 
-    call final_potential_forces(parini,atoms)
+    call fini_potential_forces(parini,atoms)
 end subroutine md_nvt_nose_hoover_chain
 !*****************************************************************************************
 subroutine set_langevin_randforce(eta,nat)
