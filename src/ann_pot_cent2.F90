@@ -28,6 +28,7 @@ subroutine cal_ann_cent2(parini,atoms,symfunc,ann_arr)
     !local variables
     type(typ_pia_arr):: pia_arr_tmp
     integer:: iat, i, j, ng
+    integer:: iats, iate, mat, mproc
     real(8):: epot_c, out_ann
     real(8):: dpx, dpy, dpz
     real(8):: time1, time2, time3, time4, time5, time6, time7, timet1, timet2
@@ -70,7 +71,19 @@ subroutine cal_ann_cent2(parini,atoms,symfunc,ann_arr)
         allocate(ann_arr%stresspq(1:3,1:3,1:symfunc%linked_lists%maxbound_rad))
     endif
     if(parini%iverbose>=2) call cpu_time(time3)
-    over_iat: do iat=1,atoms%nat
+    if(parini%mpi_env%nproc>1) then
+        mat=atoms%nat/parini%mpi_env%nproc
+        iats=parini%mpi_env%iproc*mat+1
+        mproc=mod(atoms%nat,parini%mpi_env%nproc)
+        iats=iats+max(0,parini%mpi_env%iproc-parini%mpi_env%nproc+mproc)
+        if(parini%mpi_env%iproc>parini%mpi_env%nproc-mproc-1) mat=mat+1
+        iate=iats+mat-1
+    else
+        iats=1
+        iate=atoms%nat
+        !mat=atoms%nat
+    endif
+    over_iat: do iat=iats,iate
         i=atoms%itypat(iat)
         ng=ann_arr%ann(i)%nn(0)
         ann_arr%ann(i)%y(1:ng,0)=symfunc%y(1:ng,iat)
@@ -619,7 +632,7 @@ subroutine prefit_cent2(parini,ann_arr,atoms,poisson)
     type(typ_poisson), intent(inout):: poisson
     !local variables
     integer:: itrial, iat, jat, ii
-    integer:: nbgx, nbgy, nbgz, info, itypat
+    integer:: nbgx, nbgy, nbgz
     real(8):: xyz(3), tt, rmse, err_U_SRS, U_SRS
     real(8):: qavg_Mg, qavg_O, qvar_Mg, qvar_O
     real(8):: cavg_Mg, cavg_O, cvar_Mg, cvar_O
@@ -627,10 +640,7 @@ subroutine prefit_cent2(parini,ann_arr,atoms,poisson)
     real(8), allocatable:: EP(:,:)
     real(8), allocatable:: E_all(:)
     real(8), allocatable:: linear_rho_t(:)
-    real(8), allocatable:: squarefit(:,:), squarefit_t(:,:)
-    real(8), allocatable:: real_eigenval(:), work(:)
     real(8), allocatable:: EP_n(:)
-    real(8):: hh_Mg, hh_O, hh, qtarget_Mg, qtarget_O, qtarget
     real(8):: one
     type(typ_trial_energy), pointer:: trial_energy=>null()
     real(8):: time1, time2
@@ -708,87 +718,8 @@ subroutine prefit_cent2(parini,ann_arr,atoms,poisson)
     write(*,*) 'time EP ',time2-time1
     !endif
     !-----------------------------------------------------------------
-    allocate(squarefit(atoms%nat,atoms%nat))
-    allocate(squarefit_t(atoms%nat+1,atoms%nat+1))
-    allocate(real_eigenval(1:atoms%nat),work(atoms%nat*atoms%nat))
-    squarefit=0.d0
-    squarefit_t=0.d0
-    do iat=1,atoms%nat
-        do jat=1,atoms%nat
-            tt=0.d0
-            do itrial=1,trial_energy%ntrial
-                tt=tt+2.d0*EP(iat,itrial)*EP(jat,itrial)
-            enddo
-            squarefit(iat,jat)=tt
-            squarefit_t(iat,jat)=tt
-        enddo
-    enddo
-    call DSYEV('N','U',atoms%nat,squarefit,atoms%nat,real_eigenval,work,atoms%nat**2,info)
-    do iat=1,atoms%nat
-        do jat=1,atoms%nat
-            squarefit(iat,jat)=squarefit_t(iat,jat)
-        enddo
-    enddo
-    !hh_Mg=40.d-2
-    !hh_O=40.d-2
-    hh_Mg=1.d-3*real_eigenval(atoms%nat)
-    hh_O=1.d-3*real_eigenval(atoms%nat)
-    do iat=1,atoms%nat
-        if(trim(atoms%sat(iat))=='Mg') hh=hh_Mg
-        if(trim(atoms%sat(iat))=='O' ) hh=hh_O
-        squarefit(iat,iat)=squarefit(iat,iat)+hh
-        squarefit_t(iat,iat)=squarefit_t(iat,iat)+hh
-    enddo
-    call DSYEV('N','U',atoms%nat,squarefit,atoms%nat,real_eigenval,work,atoms%nat**2,info)
-    if(parini%mpi_env%iproc==0) then
-    do iat=1,atoms%nat
-        write(*,'(a,i6,es14.5)') 'EVAL ',iat,real_eigenval(iat)
-    enddo
-    endif
-    squarefit_t(1:atoms%nat,atoms%nat+1)=1.d0
-    squarefit_t(atoms%nat+1,1:atoms%nat)=1.d0
-    squarefit_t(atoms%nat+1,atoms%nat+1)=0.d0
-    call DGETRF(atoms%nat+1,atoms%nat+1,squarefit_t,atoms%nat+1,ann_arr%ipiv,info)
-    ann_arr%qq(atoms%nat+1)=-sum(atoms%zat)
-    do iat=1,atoms%nat
-        tt=0.d0
-        do itrial=1,trial_energy%ntrial
-            tt=tt+2.d0*EP(iat,itrial)*(trial_energy%energy(itrial)-EP_n(itrial))
-        enddo
-        ann_arr%qq(iat)=tt
-    enddo
-    do itypat=1,parini%ntypat
-        if(trim(parini%stypat(itypat))=='Mg') then
-            qtarget_Mg=-ann_arr%ann(itypat)%zion+ann_arr%ann(itypat)%qtarget
-            if(parini%mpi_env%iproc==0) then
-            write(*,'(a,f8.3)') 'QTARGET_Mg ',qtarget_Mg
-            endif
-        endif
-        if(trim(parini%stypat(itypat))=='O') then
-            qtarget_O=-ann_arr%ann(itypat)%zion-ann_arr%ann(itypat)%qtarget
-            if(parini%mpi_env%iproc==0) then
-            write(*,'(a,f8.3)') 'QTARGET_O  ',qtarget_O
-            endif
-        endif
-    enddo
-    !qtarget_Mg=-2.d0+ann_arr%ann(1)%qtarget
-    !qtarget_O =-4.d0-ann_arr%ann(1)%qtarget
-    do iat=1,atoms%nat
-        if(trim(atoms%sat(iat))=='Mg') hh=hh_Mg
-        if(trim(atoms%sat(iat))=='O' ) hh=hh_O
-        if(trim(atoms%sat(iat))=='Mg') qtarget=qtarget_Mg
-        if(trim(atoms%sat(iat))=='O' ) qtarget=qtarget_O
-        ann_arr%qq(iat)=ann_arr%qq(iat)+hh*qtarget
-    enddo
-    call DGETRS('N',atoms%nat+1,1,squarefit_t,atoms%nat+1,ann_arr%ipiv,ann_arr%qq,atoms%nat+1,info)
-    if(parini%mpi_env%iproc==0) then
-    do iat=1,atoms%nat
-        write(*,'(a,i6,f7.3)') 'QQQ ',iat,atoms%zat(iat)+ann_arr%qq(iat)
-    enddo
-    endif
-    deallocate(squarefit)
-    deallocate(squarefit_t)
-    deallocate(real_eigenval,work)
+    call get_expansion_coeff(parini,ann_arr,atoms,trial_energy%ntrial, &
+        trial_energy%energy,EP,EP_n)
     !-----------------------------------------------------------------
     call reverseCEP(parini,ann_arr,atoms,poisson,ann_arr%a)
     atoms%qat(1:atoms%nat)=ann_arr%qq(1:atoms%nat)
@@ -818,6 +749,158 @@ subroutine prefit_cent2(parini,ann_arr,atoms,poisson)
     call trial_energy_deallocate(trial_energy)
     done=.true.
 end subroutine prefit_cent2
+!*****************************************************************************************
+subroutine get_expansion_coeff(parini,ann_arr,atoms,ntrial,energy,EP,EP_n)
+    use mod_parini, only: typ_parini
+    use mod_ann, only: typ_ann_arr
+    use mod_atoms, only: typ_atoms
+    implicit none
+    type(typ_parini), intent(in):: parini
+    type(typ_ann_arr), intent(inout):: ann_arr
+    type(typ_atoms), intent(in):: atoms
+    integer, intent(in):: ntrial
+    real(8), intent(in):: energy(ntrial), EP(atoms%nat,ntrial), EP_n(ntrial)
+    !local variables
+    integer:: iat, jat, itrial, info, itypat, iter
+    real(8):: hh_Mg, hh_O, hh, qtarget_Mg, qtarget_O, qtarget
+    real(8):: tt, fract
+    real(8), allocatable:: squarefit(:,:), squarefit_t(:,:)
+    real(8), allocatable:: real_eigenval(:), work(:)
+    allocate(squarefit(atoms%nat,atoms%nat))
+    allocate(squarefit_t(atoms%nat+1,atoms%nat+1))
+    allocate(real_eigenval(1:atoms%nat),work(atoms%nat*atoms%nat))
+    squarefit=0.d0
+    squarefit_t=0.d0
+    do iat=1,atoms%nat
+        do jat=1,atoms%nat
+            tt=0.d0
+            do itrial=1,ntrial
+                tt=tt+2.d0*EP(iat,itrial)*EP(jat,itrial)
+            enddo
+            squarefit(iat,jat)=tt
+            squarefit_t(iat,jat)=tt
+        enddo
+    enddo
+    call DSYEV('N','U',atoms%nat,squarefit,atoms%nat,real_eigenval,work,atoms%nat**2,info)
+    !if(parini%mpi_env%iproc==0) then
+    !do iat=1,atoms%nat
+    !    write(*,'(a,i6,es14.5)') 'EVAL ',iat,real_eigenval(iat)
+    !enddo
+    !endif
+    do iat=1,atoms%nat
+        do jat=1,atoms%nat
+            squarefit(iat,jat)=squarefit_t(iat,jat)
+        enddo
+    enddo
+    !hh_Mg=40.d-2
+    !hh_O=40.d-2
+    !-----------------------------------------------------------------
+    !do iter=0,0
+    hh_Mg=1.d-3*real_eigenval(atoms%nat)
+    hh_O=1.d-3*real_eigenval(atoms%nat)
+    !fract=min(1.d-3,1.d-5*real(iter,8))
+    !if(iter>0) then
+    !hh_Mg=fract*real_eigenval(atoms%nat)
+    !hh_O=fract*real_eigenval(atoms%nat)
+    !else
+    !hh_Mg=0.d0
+    !hh_O=0.d0
+    !endif
+    !do jat=1,atoms%nat
+    !    do iat=1,atoms%nat
+    !        squarefit_t(iat,jat)=squarefit(iat,jat)
+    !    enddo
+    !enddo
+    !if(iter>0) then
+    do iat=1,atoms%nat
+        if(trim(atoms%sat(iat))=='Mg') hh=hh_Mg
+        if(trim(atoms%sat(iat))=='O' ) hh=hh_O
+        squarefit(iat,iat)=squarefit(iat,iat)+hh
+        squarefit_t(iat,iat)=squarefit_t(iat,iat)+hh
+    enddo
+    !endif
+    call DSYEV('N','U',atoms%nat,squarefit,atoms%nat,real_eigenval,work,atoms%nat**2,info)
+    if(parini%mpi_env%iproc==0) then
+    do iat=1,atoms%nat
+        write(*,'(a,i6,es14.5)') 'EVAL ',iat,real_eigenval(iat)
+    enddo
+    endif
+    squarefit_t(1:atoms%nat,atoms%nat+1)=1.d0
+    squarefit_t(atoms%nat+1,1:atoms%nat)=1.d0
+    squarefit_t(atoms%nat+1,atoms%nat+1)=0.d0
+    call DGETRF(atoms%nat+1,atoms%nat+1,squarefit_t,atoms%nat+1,ann_arr%ipiv,info)
+    ann_arr%qq(atoms%nat+1)=-sum(atoms%zat)
+    do iat=1,atoms%nat
+        tt=0.d0
+        do itrial=1,ntrial
+            tt=tt+2.d0*EP(iat,itrial)*(energy(itrial)-EP_n(itrial))
+        enddo
+        ann_arr%qq(iat)=tt
+    enddo
+    do itypat=1,parini%ntypat
+        if(trim(parini%stypat(itypat))=='Mg') then
+            qtarget_Mg=-ann_arr%ann(itypat)%zion+ann_arr%ann(itypat)%qtarget
+            if(parini%mpi_env%iproc==0) then
+            write(*,'(a,f8.3)') 'QTARGET_Mg ',qtarget_Mg
+            endif
+        endif
+        if(trim(parini%stypat(itypat))=='O') then
+            qtarget_O=-ann_arr%ann(itypat)%zion-ann_arr%ann(itypat)%qtarget
+            if(parini%mpi_env%iproc==0) then
+            write(*,'(a,f8.3)') 'QTARGET_O  ',qtarget_O
+            endif
+        endif
+    enddo
+    !if(iter==0) then
+    !    qtarget_Mg=0.d0
+    !    qtarget_O=0.d0
+    !endif
+    !qtarget_Mg=-2.d0+ann_arr%ann(1)%qtarget
+    !qtarget_O =-4.d0-ann_arr%ann(1)%qtarget
+    do iat=1,atoms%nat
+        if(trim(atoms%sat(iat))=='Mg') hh=hh_Mg
+        if(trim(atoms%sat(iat))=='O' ) hh=hh_O
+        if(trim(atoms%sat(iat))=='Mg') qtarget=qtarget_Mg
+        if(trim(atoms%sat(iat))=='O' ) qtarget=qtarget_O
+        ann_arr%qq(iat)=ann_arr%qq(iat)+hh*qtarget
+    enddo
+    call DGETRS('N',atoms%nat+1,1,squarefit_t,atoms%nat+1,ann_arr%ipiv,ann_arr%qq,atoms%nat+1,info)
+    !qtarget_Mg=0.d0
+    !qtarget_O=0.d0
+    !do iat=1,atoms%nat
+    !    if(trim(atoms%sat(iat))=='Mg') then
+    !        !qtarget_Mg=-ann_arr%ann(itypat)%zion+ann_arr%ann(itypat)%qtarget
+    !        qtarget_Mg=qtarget_Mg+ann_arr%qq(iat)
+    !    endif
+    !    if(trim(atoms%sat(iat))=='O') then
+    !        !qtarget_O=-ann_arr%ann(itypat)%zion-ann_arr%ann(itypat)%qtarget
+    !        qtarget_O=qtarget_O+ann_arr%qq(iat)
+    !    endif
+    !enddo
+    !qtarget_Mg=qtarget_Mg/(atoms%nat/2)
+    !qtarget_O=qtarget_O/(atoms%nat/2)
+    !if(parini%mpi_env%iproc==0) then
+    !do itypat=1,parini%ntypat
+    !    if(trim(parini%stypat(itypat))=='Mg') then
+    !        write(*,'(a,f8.3,es14.5)') 'QTARGET_Mg ',ann_arr%ann(itypat)%zion+qtarget_Mg,fract
+    !    endif
+    !    if(trim(parini%stypat(itypat))=='O') then
+    !        write(*,'(a,f8.3)') 'QTARGET_O  ',ann_arr%ann(itypat)%zion+qtarget_O
+    !    endif
+    !enddo
+    !endif
+    !enddo !end of loop over iter
+    !-----------------------------------------------------------------
+
+    if(parini%mpi_env%iproc==0) then
+    do iat=1,atoms%nat
+        write(*,'(a,i6,f7.3)') 'QQQ ',iat,atoms%zat(iat)+ann_arr%qq(iat)
+    enddo
+    endif
+    deallocate(squarefit)
+    deallocate(squarefit_t)
+    deallocate(real_eigenval,work)
+end subroutine get_expansion_coeff
 !*****************************************************************************************
 subroutine cal_etrial_cent2(parini,ann_arr,atoms,poisson,U_SRS)
     use mod_parini, only: typ_parini
@@ -972,7 +1055,7 @@ subroutine reverseCEP(parini,ann_arr,atoms,poisson,amat)
         write(51,'(a,i3,a,es19.10,a)') '  - [',iat,', ',ann_arr%chi_o(iat),']'
     enddo
     file_info%filename_positions='posout.yaml'
-    file_info%print_force=parini%print_force_single_point
+    file_info%print_force=.true.
     file_info%file_position='new'
     call write_yaml_conf_train(file_info,atoms,ann_arr,.true.)
     endif
